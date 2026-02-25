@@ -1,0 +1,44 @@
+[package]
+name = "rusmes-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Main server binary for RusMES — orchestrates SMTP, IMAP, POP3, and JMAP protocol servers with unified configuration, graceful shutdown, and signal handling"
+keywords = ["email", "mail-server", "smtp", "imap", "jmap"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-server"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[lib]
+name = "rusmes_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rusmes-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "user_manager"
+path = "src/bin/user_manager.rs"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-core = { path = "../rusmes-core", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.0" }
+rusmes-imap = { path = "../rusmes-imap", version = "0.1.0" }
+rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.0" }
+rusmes-pop3 = { path = "../rusmes-pop3", version = "0.1.0" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
+rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.0" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+uuid = { workspace = true }

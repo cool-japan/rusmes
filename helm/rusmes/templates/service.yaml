@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rusmes.fullname" . }}
+  labels:
+    {{- include "rusmes.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  sessionAffinity: {{ .Values.service.sessionAffinity }}
+  {{- if .Values.service.sessionAffinityConfig }}
+  sessionAffinityConfig:
+    {{- toYaml .Values.service.sessionAffinityConfig | nindent 4 }}
+  {{- end }}
+  ports:
+  - name: smtp
+    port: {{ .Values.service.ports.smtp }}
+    targetPort: smtp
+    protocol: TCP
+  - name: smtps
+    port: {{ .Values.service.ports.smtps }}
+    targetPort: smtps
+    protocol: TCP
+  - name: submission
+    port: {{ .Values.service.ports.submission }}
+    targetPort: submission
+    protocol: TCP
+  - name: imap
+    port: {{ .Values.service.ports.imap }}
+    targetPort: imap
+    protocol: TCP
+  - name: imaps
+    port: {{ .Values.service.ports.imaps }}
+    targetPort: imaps
+    protocol: TCP
+  - name: pop3
+    port: {{ .Values.service.ports.pop3 }}
+    targetPort: pop3
+    protocol: TCP
+  - name: pop3s
+    port: {{ .Values.service.ports.pop3s }}
+    targetPort: pop3s
+    protocol: TCP
+  selector:
+    {{- include "rusmes.selectorLabels" . | nindent 4 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rusmes.fullname" . }}-jmap
+  labels:
+    {{- include "rusmes.labels" . | nindent 4 }}
+    component: jmap
+spec:
+  type: ClusterIP
+  ports:
+  - name: jmap
+    port: {{ .Values.service.ports.jmap }}
+    targetPort: jmap
+    protocol: TCP
+  selector:
+    {{- include "rusmes.selectorLabels" . | nindent 4 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rusmes.fullname" . }}-metrics
+  labels:
+    {{- include "rusmes.labels" . | nindent 4 }}
+    component: metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.service.ports.metrics }}"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: {{ .Values.service.ports.metrics }}
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    {{- include "rusmes.selectorLabels" . | nindent 4 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rusmes.fullname" . }}-headless
+  labels:
+    {{- include "rusmes.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+  - name: smtp
+    port: {{ .Values.service.ports.smtp }}
+    targetPort: smtp
+  - name: imap
+    port: {{ .Values.service.ports.imap }}
+    targetPort: imap
+  - name: jmap
+    port: {{ .Values.service.ports.jmap }}
+    targetPort: jmap
+  selector:
+    {{- include "rusmes.selectorLabels" . | nindent 4 }}

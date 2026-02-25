@@ -1,0 +1,248 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: rusmes_test
+          POSTGRES_USER: rusmes
+          POSTGRES_PASSWORD: rusmes_test_pass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-index-
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-target-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libssl-dev \
+            pkg-config \
+            netcat-openbsd \
+            postgresql-client
+
+      - name: Initialize test database
+        run: |
+          PGPASSWORD=rusmes_test_pass psql -h localhost -U rusmes -d rusmes_test -f tests/integration/init-db.sql
+
+      - name: Build project
+        run: cargo build --release --all-features
+
+      - name: Run SMTP to IMAP tests
+        run: cargo test --test smtp_to_imap --release -- --nocapture
+
+      - name: Run JMAP to POP3 tests
+        run: cargo test --test jmap_to_pop3 --release -- --nocapture
+
+      - name: Run concurrent users tests
+        run: cargo test --test concurrent_users --release -- --nocapture
+
+      - name: Run failover tests
+        run: cargo test --test failover --release -- --nocapture
+
+      - name: Run migration tests
+        run: cargo test --test migration --release -- --nocapture
+
+      - name: Run authentication tests
+        run: cargo test --test authentication --release -- --nocapture
+
+      - name: Generate test report
+        if: always()
+        run: |
+          echo "## Integration Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All integration tests completed" >> $GITHUB_STEP_SUMMARY
+
+  docker-integration:
+    name: Docker Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build RusMES Docker image
+        run: |
+          docker build -t rusmes:test .
+
+      - name: Start Docker Compose services
+        working-directory: tests/integration
+        run: |
+          docker-compose up -d postgres redis
+          sleep 10
+
+      - name: Wait for services to be healthy
+        run: |
+          timeout 60 bash -c 'until docker-compose -f tests/integration/docker-compose.yml ps | grep healthy; do sleep 2; done'
+
+      - name: Run integration tests with Docker
+        run: |
+          cargo test --test smtp_to_imap --release
+          cargo test --test jmap_to_pop3 --release
+          cargo test --test concurrent_users --release
+
+      - name: Stop Docker Compose services
+        if: always()
+        working-directory: tests/integration
+        run: docker-compose down -v
+
+      - name: Show Docker logs on failure
+        if: failure()
+        working-directory: tests/integration
+        run: |
+          docker-compose logs rusmes
+          docker-compose logs postgres
+
+  load-test:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build server
+        run: cargo build --release --bin rusmes-server
+
+      - name: Run concurrent users stress test
+        run: |
+          # Start server in background
+          ./target/release/rusmes-server --config tests/integration/test-config.toml &
+          SERVER_PID=$!
+          sleep 5
+
+          # Run stress test
+          cargo test test_high_concurrency_stress --release -- --nocapture
+
+          # Stop server
+          kill $SERVER_PID || true
+
+  coverage:
+    name: Integration Test Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: rusmes_test
+          POSTGRES_USER: rusmes
+          POSTGRES_PASSWORD: rusmes_test_pass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Run tests with coverage
+        run: |
+          cargo tarpaulin \
+            --tests \
+            --out Xml \
+            --output-dir coverage \
+            --exclude-files 'target/*' \
+            --timeout 300
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/cobertura.xml
+          flags: integration-tests
+          name: integration-coverage
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage/

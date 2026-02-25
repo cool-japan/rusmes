@@ -1,0 +1,116 @@
+# Minimal Example Configuration
+# For small deployments or testing
+
+replicaCount: 1
+
+image:
+  repository: rusmes/rusmes
+  tag: "latest"
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "500m"
+  limits:
+    memory: "2Gi"
+    cpu: "2000m"
+
+autoscaling:
+  enabled: false
+
+persistence:
+  enabled: true
+  storageClass: "standard"
+  size: 20Gi
+
+backupPersistence:
+  enabled: false
+
+config:
+  hostname: "localhost"
+  maxMessageSize: 52428800  # 50 MB
+  maxRecipients: 50
+  maxConnections: 100
+
+  smtp:
+    enabled: true
+    timeout: 300
+    rateLimitRps: 50
+
+  imap:
+    enabled: true
+    timeout: 1800
+
+  pop3:
+    enabled: false
+
+  jmap:
+    enabled: true
+    maxUploadSize: 52428800
+    maxConcurrentRequests: 50
+
+  search:
+    enabled: false
+
+  metrics:
+    enabled: true
+
+  security:
+    enableDkim: false
+    enableSpf: false
+    enableDmarc: false
+    antispam:
+      enabled: false
+
+  logging:
+    level: "info"
+    format: "json"
+
+tls:
+  enabled: false
+
+postgresql:
+  enabled: true
+  auth:
+    username: rusmes
+    password: "simple-password"
+    database: rusmes
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: "standard"
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "2000m"
+
+prometheus:
+  enabled: false
+
+grafana:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+backup:
+  enabled: false
+
+acme:
+  enabled: false
+
+rbac:
+  create: true

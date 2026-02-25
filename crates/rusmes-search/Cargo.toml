@@ -1,0 +1,22 @@
+[package]
+name = "rusmes-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Full-text search for RusMES — Tantivy-backed search index with trait-based abstraction for indexing, querying, and deleting mail messages"
+keywords = ["email", "search", "full-text", "tantivy", "indexing"]
+categories = ["email", "parser-implementations"]
+documentation = "https://docs.rs/rusmes-search"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tantivy = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+uuid = { workspace = true }

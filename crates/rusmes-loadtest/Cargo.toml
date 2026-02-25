@@ -1,0 +1,45 @@
+[package]
+name = "rusmes-loadtest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Multi-protocol load testing tool for RusMES — concurrent SMTP, IMAP, and JMAP load generation with HDR histogram latency reporting and interactive TUI dashboard"
+keywords = ["email", "load-testing", "smtp", "imap", "benchmarking"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-loadtest"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.0" }
+rusmes-imap = { path = "../rusmes-imap", version = "0.1.0" }
+rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.0" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+hdrhistogram = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rand = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+serde_yaml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+mockall = { workspace = true }
+
+[[bin]]
+name = "rusmes-loadtest"
+path = "src/main.rs"

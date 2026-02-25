@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-smtp
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: smtp
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+  - name: smtp
+    port: 25
+    targetPort: smtp
+    protocol: TCP
+  - name: submission
+    port: 587
+    targetPort: submission
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-imap
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: imap
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+  - name: imap
+    port: 143
+    targetPort: imap
+    protocol: TCP
+  - name: imaps
+    port: 993
+    targetPort: imaps
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-pop3
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: pop3
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+  - name: pop3
+    port: 110
+    targetPort: pop3
+    protocol: TCP
+  - name: pop3s
+    port: 995
+    targetPort: pop3s
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-jmap
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: jmap
+spec:
+  type: ClusterIP
+  ports:
+  - name: jmap
+    port: 8080
+    targetPort: jmap
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-metrics
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rusmes-headless
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: headless
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: smtp
+    port: 25
+    targetPort: smtp
+    protocol: TCP
+  - name: imap
+    port: 143
+    targetPort: imap
+    protocol: TCP
+  - name: pop3
+    port: 110
+    targetPort: pop3
+    protocol: TCP
+  - name: jmap
+    port: 8080
+    targetPort: jmap
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: rusmes
+    component: mail-server

@@ -1,0 +1,187 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rusmes-config
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: config
+data:
+  rusmes.toml: |
+    # RusMES Configuration File
+    # Kubernetes Production Configuration
+
+    domain = "example.com"
+    postmaster = "postmaster@example.com"
+
+    # SMTP Server Configuration
+    [smtp]
+    host = "0.0.0.0"
+    port = 25
+    tls_port = 587
+    max_message_size = "50MB"
+    require_auth = true
+    enable_starttls = true
+    max_connections = 1000
+    timeout = 300
+
+    # TLS Configuration
+    tls_cert = "/etc/rusmes/certs/tls.crt"
+    tls_key = "/etc/rusmes/certs/tls.key"
+
+    # SMTP Limits
+    [smtp.limits]
+    rate_limit = 100
+    rate_window = 60
+
+    # IMAP Server Configuration
+    [imap]
+    host = "0.0.0.0"
+    port = 143
+    tls_port = 993
+    max_connections = 1000
+    timeout = 1800
+    enable_idle = true
+    enable_condstore = true
+    enable_qresync = true
+
+    # TLS Configuration
+    tls_cert = "/etc/rusmes/certs/tls.crt"
+    tls_key = "/etc/rusmes/certs/tls.key"
+
+    # POP3 Server Configuration
+    [pop3]
+    host = "0.0.0.0"
+    port = 110
+    tls_port = 995
+    max_connections = 500
+    timeout = 600
+
+    # TLS Configuration
+    tls_cert = "/etc/rusmes/certs/tls.crt"
+    tls_key = "/etc/rusmes/certs/tls.key"
+
+    # JMAP Server Configuration
+    [jmap]
+    host = "0.0.0.0"
+    port = 8080
+    base_url = "https://jmap.example.com"
+    max_upload_size = "50MB"
+    max_concurrent_requests = 100
+    session_timeout = 3600
+
+    # Storage Backend Configuration
+    [storage]
+    backend = "filesystem"
+    path = "/var/lib/rusmes/mail"
+
+    # Alternative: PostgreSQL backend (uncomment to use)
+    # [storage]
+    # backend = "postgres"
+    # connection_string = "postgresql://rusmes:${POSTGRES_PASSWORD}@postgres-service:5432/rusmes"
+    # max_connections = 100
+    # min_connections = 10
+
+    # Alternative: AmateRS distributed backend (uncomment to use)
+    # [storage]
+    # backend = "amaters"
+    # endpoints = ["amaters-0.amaters:8080", "amaters-1.amaters:8080", "amaters-2.amaters:8080"]
+    # replication_factor = 3
+
+    # Authentication Backend
+    [auth]
+    backend = "filesystem"
+    users_path = "/var/lib/rusmes/users"
+    # backend = "postgres"
+    # backend = "ldap"
+
+    # Search Configuration
+    [search]
+    enabled = true
+    backend = "tantivy"
+    index_path = "/var/lib/rusmes/search"
+
+    # Metrics Configuration
+    [metrics]
+    enabled = true
+    host = "0.0.0.0"
+    port = 9090
+    path = "/metrics"
+
+    # Logging Configuration
+    [logging]
+    level = "info"
+    format = "json"
+    output = "stdout"
+
+    # Security Configuration
+    [security]
+    enable_dkim = true
+    dkim_private_key = "/etc/rusmes/dkim/dkim.key"
+    dkim_selector = "default"
+
+    enable_spf = true
+    enable_dmarc = true
+    enable_arc = true
+
+    # Anti-Spam Configuration
+    [security.antispam]
+    enabled = true
+    spam_threshold = 5.0
+    enable_greylisting = true
+    greylist_duration = 300
+
+    # DNSBL/RBL Configuration
+    [security.dnsbl]
+    enabled = true
+    servers = [
+        "zen.spamhaus.org",
+        "bl.spamcop.net",
+        "dnsbl.sorbs.net"
+    ]
+
+    # Mail Processing Pipeline
+    # Root Processor - Entry point for all incoming mail
+    [[processors]]
+    name = "root"
+    state = "root"
+
+    # Step 1: Deliver to local recipients
+    [[processors.mailets]]
+    matcher = "RecipientIsLocal"
+    mailet = "LocalDelivery"
+
+    # Step 2: Relay remote mail to transport processor
+    [[processors.mailets]]
+    matcher = "All"
+    mailet = "RemoteDelivery"
+
+    # Transport Processor - Outbound mail delivery
+    [[processors]]
+    name = "transport"
+    state = "transport"
+
+    # Relay to remote SMTP servers
+    [[processors.mailets]]
+    matcher = "All"
+    mailet = "RemoteDelivery"
+
+    # Local Delivery Processor
+    [[processors]]
+    name = "local-delivery"
+    state = "local-delivery"
+
+    # Deliver to local mailboxes
+    [[processors.mailets]]
+    matcher = "All"
+    mailet = "LocalDelivery"
+
+    # Error Processor - Handle delivery failures
+    [[processors]]
+    name = "error"
+    state = "error"
+
+    # Send bounce messages
+    [[processors.mailets]]
+    matcher = "All"
+    mailet = "Bounce"

@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'rusmes-monitor'
+
+scrape_configs:
+  - job_name: 'rusmes'
+    static_configs:
+      - targets: ['rusmes:8080']
+        labels:
+          service: 'rusmes-mail-server'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -1,0 +1,29 @@
+[package]
+name = "rusmes-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Observability layer for RusMES — Prometheus metrics, OpenTelemetry OTLP tracing, structured logging, health/readiness/liveness endpoints, and Grafana dashboard"
+keywords = ["email", "metrics", "prometheus", "opentelemetry", "tracing"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-metrics"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
+prometheus = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,1407 @@
+{
+  "dashboard": {
+    "title": "RusMES Mail Server Monitoring",
+    "tags": ["mail", "rusmes", "monitoring"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 2,
+    "refresh": "30s",
+    "editable": true,
+    "graphTooltip": 1,
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "datasource",
+          "type": "datasource",
+          "query": "prometheus",
+          "label": "Data Source",
+          "current": {
+            "text": "Prometheus",
+            "value": "prometheus"
+          }
+        },
+        {
+          "name": "instance",
+          "type": "query",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "query": "label_values(rusmes_smtp_connections_total, instance)",
+          "label": "Instance",
+          "multi": true,
+          "includeAll": true,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "refresh": 1
+        },
+        {
+          "name": "interval",
+          "type": "interval",
+          "label": "Interval",
+          "auto": true,
+          "auto_count": 30,
+          "auto_min": "10s",
+          "options": [
+            {
+              "text": "1m",
+              "value": "1m",
+              "selected": true
+            },
+            {
+              "text": "5m",
+              "value": "5m"
+            },
+            {
+              "text": "10m",
+              "value": "10m"
+            },
+            {
+              "text": "30m",
+              "value": "30m"
+            },
+            {
+              "text": "1h",
+              "value": "1h"
+            }
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "enable": true,
+          "expr": "ALERTS{alertstate=\"firing\",instance=~\"$instance\"}",
+          "iconColor": "red",
+          "name": "Alerts",
+          "step": "60s",
+          "tagKeys": "alertname,severity",
+          "textFormat": "{{alertname}}: {{instance}}",
+          "titleFormat": "Alert"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "enable": false,
+          "expr": "",
+          "iconColor": "blue",
+          "name": "Deployments",
+          "step": "60s",
+          "tagKeys": "version",
+          "titleFormat": "Deployment"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "type": "row",
+        "id": 100,
+        "title": "Overview",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 1,
+        "title": "Messages per Second",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 1,
+          "w": 12,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(rusmes_smtp_messages_received_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "SMTP Received",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(rusmes_smtp_messages_sent_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "SMTP Sent",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(rusmes_imap_commands_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "IMAP Commands",
+            "refId": "C"
+          },
+          {
+            "expr": "rate(rusmes_jmap_requests_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "JMAP Requests",
+            "refId": "D"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          },
+          "overrides": []
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi",
+            "sort": "desc"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "calcs": ["lastNotNull", "mean", "max"]
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Active SMTP Connections",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 1,
+          "w": 4,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_smtp_connections_total{instance=~\"$instance\"} - rusmes_smtp_connections_total{instance=~\"$instance\"} offset 1m",
+            "refId": "A",
+            "instant": false
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 100,
+                  "color": "yellow"
+                },
+                {
+                  "value": 500,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "orientation": "auto",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "Active IMAP Connections",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 1,
+          "w": 4,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_imap_connections_total{instance=~\"$instance\"} - rusmes_imap_connections_total{instance=~\"$instance\"} offset 1m",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 100,
+                  "color": "yellow"
+                },
+                {
+                  "value": 500,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "orientation": "auto",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "Active JMAP Connections",
+        "type": "stat",
+        "gridPos": {
+          "x": 20,
+          "y": 1,
+          "w": 4,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_jmap_requests_total{instance=~\"$instance\"} - rusmes_jmap_requests_total{instance=~\"$instance\"} offset 1m",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 50,
+                  "color": "yellow"
+                },
+                {
+                  "value": 200,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "background",
+          "orientation": "auto",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "Queue Depth",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 9,
+          "w": 12,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_queue_size{instance=~\"$instance\"}",
+            "legendFormat": "Queue Depth",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 20,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 500,
+                  "color": "yellow"
+                },
+                {
+                  "value": 1000,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        },
+        "alert": {
+          "name": "High Queue Depth",
+          "message": "Queue depth is above 1000 messages",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [1000]
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "operator": {
+                "type": "and"
+              },
+              "type": "query"
+            }
+          ],
+          "frequency": "60s",
+          "for": "5m",
+          "noDataState": "no_data",
+          "executionErrorState": "alerting"
+        }
+      },
+      {
+        "type": "row",
+        "id": 101,
+        "title": "Performance",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 17,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 6,
+        "title": "Message Processing Latency (p50, p95, p99)",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(rusmes_message_processing_latency_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rusmes_message_processing_latency_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(rusmes_message_processing_latency_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "p99"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "red"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "calcs": ["lastNotNull", "mean", "max"]
+          }
+        }
+      },
+      {
+        "id": 7,
+        "title": "SMTP Session Duration (p50, p95, p99)",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(rusmes_smtp_session_duration_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rusmes_smtp_session_duration_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(rusmes_smtp_session_duration_seconds_bucket{instance=~\"$instance\"}[$interval])) by (le))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "calcs": ["lastNotNull", "mean", "max"]
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "Storage Usage",
+        "type": "gauge",
+        "gridPos": {
+          "x": 0,
+          "y": 26,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_storage_bytes{instance=~\"$instance\"} / (10 * 1024 * 1024 * 1024) * 100",
+            "refId": "A",
+            "legendFormat": "Storage %"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 70,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true,
+          "orientation": "auto"
+        }
+      },
+      {
+        "type": "row",
+        "id": 102,
+        "title": "System Resources",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 34,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 9,
+        "title": "Memory Usage",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 35,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes{job=\"rusmes\",instance=~\"$instance\"}",
+            "legendFormat": "Memory Usage",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 20,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 1073741824,
+                  "color": "yellow"
+                },
+                {
+                  "value": 1610612736,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "CPU Usage",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 8,
+          "y": 35,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(process_cpu_seconds_total{job=\"rusmes\",instance=~\"$instance\"}[$interval]) * 100",
+            "legendFormat": "CPU %",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 20,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 70,
+                  "color": "yellow"
+                },
+                {
+                  "value": 90,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "Disk I/O",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 16,
+          "y": 35,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(node_disk_read_bytes_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "Read",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(node_disk_written_bytes_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "Write",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "Bps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "calcs": ["lastNotNull", "mean", "max"]
+          }
+        }
+      },
+      {
+        "type": "row",
+        "id": 103,
+        "title": "Errors & Security",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 43,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 12,
+        "title": "Error Rate by Protocol",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 44,
+          "w": 12,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(rusmes_smtp_errors_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "SMTP Errors",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(rusmes_imap_errors_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "IMAP Errors",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(rusmes_jmap_errors_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "JMAP Errors",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 1,
+                  "color": "yellow"
+                },
+                {
+                  "value": 10,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "calcs": ["lastNotNull", "mean", "max"]
+          }
+        },
+        "alert": {
+          "name": "High Error Rate",
+          "message": "Error rate exceeds 10 errors per second",
+          "conditions": [
+            {
+              "evaluator": {
+                "type": "gt",
+                "params": [10]
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "operator": {
+                "type": "or"
+              },
+              "type": "query"
+            }
+          ],
+          "frequency": "60s",
+          "for": "1m"
+        }
+      },
+      {
+        "id": 13,
+        "title": "Spam/Virus Blocked",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 44,
+          "w": 6,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_mail_dropped_total{instance=~\"$instance\"}",
+            "legendFormat": "Blocked",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 100,
+                  "color": "yellow"
+                },
+                {
+                  "value": 1000,
+                  "color": "orange"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value",
+          "orientation": "auto",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull", "delta"]
+          }
+        }
+      },
+      {
+        "id": 14,
+        "title": "Mail Processing Status",
+        "type": "piechart",
+        "gridPos": {
+          "x": 18,
+          "y": 44,
+          "w": 6,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_mail_delivered_total{instance=~\"$instance\"}",
+            "legendFormat": "Delivered",
+            "refId": "A",
+            "instant": true
+          },
+          {
+            "expr": "rusmes_mail_bounced_total{instance=~\"$instance\"}",
+            "legendFormat": "Bounced",
+            "refId": "B",
+            "instant": true
+          },
+          {
+            "expr": "rusmes_mail_dropped_total{instance=~\"$instance\"}",
+            "legendFormat": "Dropped",
+            "refId": "C",
+            "instant": true
+          }
+        ],
+        "options": {
+          "pieType": "donut",
+          "displayLabels": ["name", "percent"],
+          "legend": {
+            "displayMode": "table",
+            "placement": "bottom",
+            "showLegend": true,
+            "values": ["value", "percent"]
+          }
+        }
+      },
+      {
+        "type": "row",
+        "id": 104,
+        "title": "Protocol-Specific Metrics",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 52,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 15,
+        "title": "SMTP Message Flow",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 53,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(rusmes_smtp_messages_received_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "Received",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(rusmes_smtp_messages_sent_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "Sent",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 16,
+        "title": "IMAP Command Rate",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 8,
+          "y": 53,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(rusmes_imap_commands_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "IMAP Commands",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 20,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 17,
+        "title": "JMAP Request Rate",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 16,
+          "y": 53,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rate(rusmes_jmap_requests_total{instance=~\"$instance\"}[$interval])",
+            "legendFormat": "JMAP Requests",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 20,
+              "showPoints": "never"
+            },
+            "color": {
+              "mode": "palette-classic"
+            }
+          }
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "type": "row",
+        "id": 105,
+        "title": "Summary Statistics",
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 61,
+          "w": 24,
+          "h": 1
+        }
+      },
+      {
+        "id": 18,
+        "title": "Total Messages Processed",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 62,
+          "w": 6,
+          "h": 4
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_mail_processed_total{instance=~\"$instance\"}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "blue"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 19,
+        "title": "Total Mailboxes",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 62,
+          "w": 6,
+          "h": 4
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_mailboxes_total{instance=~\"$instance\"}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "purple"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 20,
+        "title": "Total Messages Stored",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 62,
+          "w": 6,
+          "h": 4
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "rusmes_messages_total{instance=~\"$instance\"}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      },
+      {
+        "id": 21,
+        "title": "Uptime",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 62,
+          "w": 6,
+          "h": 4
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "targets": [
+          {
+            "expr": "time() - process_start_time_seconds{job=\"rusmes\",instance=~\"$instance\"}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "dtdurations",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "text"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "graphMode": "none",
+          "colorMode": "value",
+          "textMode": "value_and_name",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"]
+          }
+        }
+      }
+    ]
+  }
+}

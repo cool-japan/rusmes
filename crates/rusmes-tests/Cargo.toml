@@ -1,0 +1,20 @@
+[package]
+name = "rusmes-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Integration and RFC compliance tests for RusMES"
+publish = false
+
+[lib]
+name = "rusmes_tests_dummy"
+path = "src/lib.rs"
+
+[dev-dependencies]
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+criterion = { workspace = true }

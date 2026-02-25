@@ -1,0 +1,51 @@
+# Peak Traffic Load Test Scenario
+# Tests system behavior under maximum expected load
+
+name: "Peak Traffic Test"
+description: "Simulates peak traffic with 50,000 msg/sec for 5 minutes"
+
+config:
+  target_host: "localhost"
+  target_port: 25
+  protocol: "smtp"
+  scenario: "smtp-throughput"
+
+  # Test parameters
+  duration_secs: 300  # 5 minutes
+  concurrency: 5000
+  message_rate: 50000  # 50k msg/sec
+  ramp_up_secs: 30     # Gradual ramp-up
+
+  # Message configuration
+  message_size:
+    random:
+      min: 1024      # 1 KB
+      max: 102400    # 100 KB
+  message_content: "random"
+
+  # Output
+  output_json: "/tmp/peak-traffic-test.json"
+  output_html: "/tmp/peak-traffic-test.html"
+  output_csv: "/tmp/peak-traffic-test.csv"
+  prometheus_export: true
+  prometheus_port: 9090
+
+# Success criteria
+success_criteria:
+  min_throughput: 45000      # At least 45k msg/sec
+  max_p99_latency_ms: 200    # p99 latency under 200ms
+  min_success_rate: 0.99     # 99% success rate
+  max_error_rate: 0.01       # Less than 1% errors
+
+# Test iterations
+iterations: 10
+
+# Notes
+notes: |
+  This test validates the system can handle peak traffic loads.
+  Expected metrics:
+  - Throughput: 45,000 - 50,000 msg/sec
+  - p99 Latency: < 200ms
+  - Success Rate: > 99%
+  - Memory usage should be stable
+  - No connection errors

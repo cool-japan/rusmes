@@ -1,0 +1,273 @@
+# Prometheus Alert Rules for RusMES Mail Server
+# These rules define alerting conditions for monitoring the RusMES mail server.
+# Load these rules into your Prometheus configuration.
+
+groups:
+  - name: rusmes_queue_alerts
+    interval: 30s
+    rules:
+      - alert: HighQueueDepth
+        expr: rusmes_queue_size > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "High mail queue depth on {{ $labels.instance }}"
+          description: "Mail queue has {{ $value }} messages pending (threshold: 1000). This may indicate delivery issues or performance problems."
+
+      - alert: CriticalQueueDepth
+        expr: rusmes_queue_size > 5000
+        for: 2m
+        labels:
+          severity: critical
+          component: queue
+        annotations:
+          summary: "Critical mail queue depth on {{ $labels.instance }}"
+          description: "Mail queue has {{ $value }} messages pending (threshold: 5000). Immediate investigation required."
+
+      - alert: QueueRetryStorm
+        expr: rate(rusmes_queue_retries_total[5m]) > 50
+        for: 2m
+        labels:
+          severity: warning
+          component: queue
+        annotations:
+          summary: "High queue retry rate on {{ $labels.instance }}"
+          description: "Queue retry rate is {{ $value | humanize }} retries/sec. Check for delivery failures or connectivity issues."
+
+  - name: rusmes_error_alerts
+    interval: 30s
+    rules:
+      - alert: HighSMTPErrorRate
+        expr: rate(rusmes_smtp_errors_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          component: smtp
+          protocol: smtp
+        annotations:
+          summary: "High SMTP error rate on {{ $labels.instance }}"
+          description: "SMTP errors occurring at {{ $value | humanize }} errors/sec (threshold: 10/sec)."
+
+      - alert: HighIMAPErrorRate
+        expr: rate(rusmes_imap_errors_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          component: imap
+          protocol: imap
+        annotations:
+          summary: "High IMAP error rate on {{ $labels.instance }}"
+          description: "IMAP errors occurring at {{ $value | humanize }} errors/sec (threshold: 10/sec)."
+
+      - alert: HighJMAPErrorRate
+        expr: rate(rusmes_jmap_errors_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          component: jmap
+          protocol: jmap
+        annotations:
+          summary: "High JMAP error rate on {{ $labels.instance }}"
+          description: "JMAP errors occurring at {{ $value | humanize }} errors/sec (threshold: 10/sec)."
+
+  - name: rusmes_storage_alerts
+    interval: 60s
+    rules:
+      - alert: HighStorageUsage
+        expr: (rusmes_storage_bytes / (10 * 1024 * 1024 * 1024)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Critical storage usage on {{ $labels.instance }}"
+          description: "Storage usage is at {{ $value | humanize }}% (threshold: 90%). Disk space is critically low."
+
+      - alert: StorageUsageWarning
+        expr: (rusmes_storage_bytes / (10 * 1024 * 1024 * 1024)) * 100 > 70
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "High storage usage on {{ $labels.instance }}"
+          description: "Storage usage is at {{ $value | humanize }}% (threshold: 70%). Consider cleaning up or expanding storage."
+
+  - name: rusmes_performance_alerts
+    interval: 30s
+    rules:
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes{job="rusmes"} > 1610612736
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizeBytes }} (threshold: 1.5GB). May indicate memory leak or high load."
+
+      - alert: CriticalMemoryUsage
+        expr: process_resident_memory_bytes{job="rusmes"} > 3221225472
+        for: 2m
+        labels:
+          severity: critical
+          component: performance
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizeBytes }} (threshold: 3GB). Service may become unstable."
+
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total{job="rusmes"}[5m]) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}% (threshold: 80%) for over 10 minutes."
+
+      - alert: CriticalCPUUsage
+        expr: rate(process_cpu_seconds_total{job="rusmes"}[5m]) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: performance
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}% (threshold: 95%). Service performance severely degraded."
+
+      - alert: HighMessageProcessingLatency
+        expr: histogram_quantile(0.95, sum(rate(rusmes_message_processing_latency_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High message processing latency on {{ $labels.instance }}"
+          description: "P95 message processing latency is {{ $value | humanize }}s (threshold: 5s)."
+
+      - alert: HighSMTPSessionDuration
+        expr: histogram_quantile(0.95, sum(rate(rusmes_smtp_session_duration_seconds_bucket[5m])) by (le)) > 120
+        for: 5m
+        labels:
+          severity: warning
+          component: smtp
+        annotations:
+          summary: "High SMTP session duration on {{ $labels.instance }}"
+          description: "P95 SMTP session duration is {{ $value | humanize }}s (threshold: 120s). May indicate slow clients or network issues."
+
+  - name: rusmes_security_alerts
+    interval: 30s
+    rules:
+      - alert: BruteForceAttackDetected
+        expr: rate(rusmes_smtp_errors_total[5m]) > 50 or rate(rusmes_imap_errors_total[5m]) > 50
+        for: 2m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Potential brute force attack on {{ $labels.instance }}"
+          description: "High authentication failure rate detected: {{ $value | humanize }} failures/sec (threshold: 50/sec). Possible brute force attack."
+
+      - alert: HighSpamRate
+        expr: rate(rusmes_mail_dropped_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High spam/malware blocking rate on {{ $labels.instance }}"
+          description: "Blocking {{ $value | humanize }} messages/sec (threshold: 100/sec). Possible spam campaign targeting this server."
+
+  - name: rusmes_availability_alerts
+    interval: 60s
+    rules:
+      - alert: ServiceDown
+        expr: up{job="rusmes"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: availability
+        annotations:
+          summary: "RusMES service is down on {{ $labels.instance }}"
+          description: "The RusMES mail server is not responding to Prometheus scrape requests. Service may be down."
+
+      - alert: HighConnectionFailureRate
+        expr: |
+          (
+            rate(rusmes_smtp_errors_total[5m]) /
+            (rate(rusmes_smtp_connections_total[5m]) + 0.001)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: smtp
+        annotations:
+          summary: "High SMTP connection failure rate on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of SMTP connections are failing (threshold: 10%)."
+
+      - alert: NoMessagesProcessed
+        expr: rate(rusmes_mail_processed_total[1h]) == 0
+        for: 1h
+        labels:
+          severity: warning
+          component: availability
+        annotations:
+          summary: "No messages processed on {{ $labels.instance }}"
+          description: "No mail has been processed in the last hour. Service may be idle or experiencing issues."
+
+  - name: rusmes_bounced_mail_alerts
+    interval: 60s
+    rules:
+      - alert: HighBouncedMailRate
+        expr: |
+          (
+            rate(rusmes_mail_bounced_total[10m]) /
+            (rate(rusmes_mail_processed_total[10m]) + 0.001)
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          component: delivery
+        annotations:
+          summary: "High bounce rate on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of processed mail is bouncing (threshold: 20%). Check delivery configuration."
+
+      - alert: CriticalBouncedMailRate
+        expr: |
+          (
+            rate(rusmes_mail_bounced_total[10m]) /
+            (rate(rusmes_mail_processed_total[10m]) + 0.001)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          component: delivery
+        annotations:
+          summary: "Critical bounce rate on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of processed mail is bouncing (threshold: 50%). Major delivery issues detected."
+
+  - name: rusmes_health_alerts
+    interval: 30s
+    rules:
+      - alert: HealthCheckFailing
+        expr: probe_success{job="rusmes-health"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: health
+        annotations:
+          summary: "Health check failing on {{ $labels.instance }}"
+          description: "The /health endpoint is returning failure status. Service components may be unhealthy."
+
+      - alert: ReadinessCheckFailing
+        expr: probe_success{job="rusmes-ready"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: health
+        annotations:
+          summary: "Readiness check failing on {{ $labels.instance }}"
+          description: "The /ready endpoint is returning failure status. Service may not be ready to accept traffic."

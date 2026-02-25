@@ -1,0 +1,251 @@
+# RusMES Full Configuration Example
+# This file demonstrates all available configuration options
+
+# Server identification
+domain = "mail.example.com"
+postmaster = "postmaster@example.com"
+hostname = "mail.example.com"
+
+# ===== SMTP Configuration =====
+[smtp]
+# Bind address and ports
+host = "0.0.0.0"
+port = 25              # Standard SMTP port
+tls_port = 587         # Submission port with STARTTLS
+
+# Connection limits
+max_connections = 1000
+max_connections_per_ip = 10
+connection_timeout = "300s"
+
+# Message limits
+max_message_size = "50MB"
+max_recipients_per_message = 100
+
+# SMTP extensions
+enable_pipelining = true
+enable_8bitmime = true
+enable_smtputf8 = true
+
+# Authentication
+require_auth_for_relay = true
+auth_mechanisms = ["PLAIN", "LOGIN", "CRAM-MD5"]
+
+# TLS configuration
+tls_cert = "/etc/rusmes/certs/fullchain.pem"
+tls_key = "/etc/rusmes/certs/privkey.pem"
+require_tls = false
+
+# Rate limiting
+[smtp.rate_limit]
+max_messages_per_hour = 100
+window_duration = "1h"
+
+# ===== IMAP Configuration =====
+[imap]
+host = "0.0.0.0"
+port = 143            # Standard IMAP port
+tls_port = 993        # IMAPS port
+
+max_connections = 500
+idle_timeout = "30m"
+
+# TLS configuration (reuse SMTP certs or specify different ones)
+tls_cert = "/etc/rusmes/certs/fullchain.pem"
+tls_key = "/etc/rusmes/certs/privkey.pem"
+
+# ===== JMAP Configuration =====
+[jmap]
+host = "0.0.0.0"
+port = 8080
+base_url = "https://mail.example.com"
+
+# Upload limits
+max_upload_size = "50MB"
+
+# TLS configuration
+tls_cert = "/etc/rusmes/certs/fullchain.pem"
+tls_key = "/etc/rusmes/certs/privkey.pem"
+
+# ===== Storage Configuration =====
+[storage]
+# Backend: "filesystem", "postgres", "amaters"
+backend = "filesystem"
+path = "/var/lib/rusmes"
+
+# PostgreSQL backend (alternative)
+# [storage]
+# backend = "postgres"
+# connection_string = "postgresql://rusmes:password@localhost/rusmes"
+
+# AmateRS backend (alternative)
+# [storage]
+# backend = "amaters"
+# endpoints = ["amaters1:8080", "amaters2:8080", "amaters3:8080"]
+# replication_factor = 3
+
+# ===== Mail Processing Configuration =====
+
+# Root processor - entry point for all mail
+[[processors]]
+name = "root"
+state = "root"
+thread_pool_size = 10
+
+# Remove Bcc header for privacy
+[[processors.mailets]]
+matcher = "All"
+mailet = "AddHeader"
+params = { name = "X-RusMES-Received", value = "true" }
+
+# Virus scanning
+[[processors.mailets]]
+matcher = "All"
+mailet = "VirusScan"
+params = { reject_on_virus = "true" }
+
+# SPF checking
+[[processors.mailets]]
+matcher = "All"
+mailet = "SpfCheck"
+params = { reject_on_fail = "false" }
+
+# DKIM verification
+[[processors.mailets]]
+matcher = "All"
+mailet = "DkimVerify"
+params = { reject_on_fail = "false" }
+
+# DMARC policy enforcement
+[[processors.mailets]]
+matcher = "All"
+mailet = "DmarcVerify"
+params = { honor_policy = "true" }
+
+# Spam filtering
+[[processors.mailets]]
+matcher = "All"
+mailet = "SpamAssassin"
+params = { threshold = "5.0", reject_spam = "false" }
+
+# Route to transport processor
+[[processors.mailets]]
+matcher = "All"
+mailet = "AddHeader"
+params = { name = "X-RusMES-State", value = "transport" }
+
+# Transport processor - routes mail to local or remote delivery
+[[processors]]
+name = "transport"
+state = "transport"
+thread_pool_size = 5
+
+# Local delivery for local recipients
+[[processors.mailets]]
+matcher = "RecipientIsLocal"
+mailet = "LocalDelivery"
+
+# Remote delivery for external recipients (requires authentication)
+[[processors.mailets]]
+matcher = "All"
+mailet = "RemoteDelivery"
+params = { max_retries = "5", retry_delay = "60s" }
+
+# Error processor - handles delivery failures
+[[processors]]
+name = "error"
+state = "error"
+thread_pool_size = 2
+
+# Generate bounce messages
+[[processors.mailets]]
+matcher = "All"
+mailet = "AddHeader"
+params = { name = "X-RusMES-Error", value = "true" }
+
+# ===== Authentication Configuration =====
+[auth]
+# Backend: "file", "ldap", "sql", "oauth2"
+backend = "file"
+path = "/etc/rusmes/users.db"
+
+# LDAP backend (alternative)
+# [auth]
+# backend = "ldap"
+# url = "ldap://ldap.example.com:389"
+# base_dn = "ou=users,dc=example,dc=com"
+# bind_dn = "cn=admin,dc=example,dc=com"
+# bind_password = "secret"
+# user_filter = "(mail={username})"
+
+# SQL backend (alternative)
+# [auth]
+# backend = "sql"
+# connection_string = "postgresql://rusmes:password@localhost/rusmes"
+# query = "SELECT password_hash FROM users WHERE email = $1"
+
+# ===== Metrics Configuration =====
+[metrics]
+enabled = true
+bind_address = "0.0.0.0:9090"
+path = "/metrics"
+
+# ===== Logging Configuration =====
+[logging]
+level = "info"  # trace, debug, info, warn, error
+format = "json" # json or text
+output = "stdout" # stdout, stderr, or file path
+
+# File logging (optional)
+# [logging.file]
+# path = "/var/log/rusmes/rusmes.log"
+# max_size = "100MB"
+# max_backups = 10
+# compress = true
+
+# ===== Queue Configuration =====
+[queue]
+# Retry policy
+initial_delay = "60s"
+max_delay = "3600s"
+backoff_multiplier = 2.0
+max_attempts = 5
+
+# Queue processing
+worker_threads = 5
+batch_size = 100
+
+# ===== Security Configuration =====
+[security]
+# Allowed relay networks (in CIDR notation)
+relay_networks = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# Blocked IP addresses
+blocked_ips = []
+
+# Recipient validation
+check_recipient_exists = true
+reject_unknown_recipients = true
+
+# ===== Local Domains =====
+[domains]
+# Domains this server accepts mail for
+local_domains = ["example.com", "mail.example.com"]
+
+# Virtual aliases
+[domains.aliases]
+"abuse@example.com" = "postmaster@example.com"
+"webmaster@example.com" = "admin@example.com"
+
+# ===== Performance Tuning =====
+[performance]
+# Worker threads for async runtime
+worker_threads = 4
+
+# Connection pools
+smtp_pool_size = 100
+imap_pool_size = 50
+
+# Buffer sizes
+read_buffer_size = "64KB"
+write_buffer_size = "64KB"

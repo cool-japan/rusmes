@@ -1,0 +1,5 @@
+[alias]
+all = "nextest run --no-fail-fast --all-features --workspace"
+nxt-list = "nextest list --all-features --workspace"
+
+

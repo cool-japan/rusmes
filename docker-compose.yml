@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  rusmes:
+    build: .
+    container_name: rusmes-server
+    ports:
+      - "25:25"     # SMTP
+      - "143:143"   # IMAP
+      - "587:587"   # SMTP Submission
+      - "993:993"   # IMAPS
+      - "8080:8080" # JMAP / Metrics
+    volumes:
+      - ./rusmes.toml:/etc/rusmes/rusmes.toml:ro
+      - rusmes-mailboxes:/var/lib/rusmes/mailboxes
+      - rusmes-queue:/var/lib/rusmes/queue
+      - rusmes-logs:/var/log/rusmes
+    environment:
+      - RUST_LOG=info
+      - RUSMES_CONFIG=/etc/rusmes/rusmes.toml
+    restart: unless-stopped
+    networks:
+      - rusmes-network
+
+  # Optional: PostgreSQL backend
+  postgres:
+    image: postgres:15-alpine
+    container_name: rusmes-postgres
+    environment:
+      - POSTGRES_DB=rusmes
+      - POSTGRES_USER=rusmes
+      - POSTGRES_PASSWORD=changeme
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - rusmes-network
+    restart: unless-stopped
+
+  # Optional: Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rusmes-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - rusmes-network
+    restart: unless-stopped
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: rusmes-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - rusmes-network
+    restart: unless-stopped
+
+volumes:
+  rusmes-mailboxes:
+  rusmes-queue:
+  rusmes-logs:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  rusmes-network:
+    driver: bridge

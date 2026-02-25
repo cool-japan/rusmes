@@ -1,0 +1,6 @@
+{
+  "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+  "methodCalls": [
+    ["Email/get", {"ids": ["M123"], "properties": ["subject", "from"]}, "c1"]
+  ]
+}

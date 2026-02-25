@@ -1,0 +1,43 @@
+[package]
+name = "rusmes-benches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Benchmarks for RusMES"
+publish = false
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "connections"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "mailets"
+harness = false
+
+[[bench]]
+name = "parsing"
+harness = false
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "auth"
+harness = false

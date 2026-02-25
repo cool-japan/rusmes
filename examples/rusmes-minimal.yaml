@@ -1,0 +1,56 @@
+# RusMES Minimal Configuration (YAML format)
+# Simple setup for testing and development
+
+domain: localhost
+postmaster: postmaster@localhost
+
+smtp:
+  host: 127.0.0.1
+  port: 2525  # Non-privileged port for development
+  max_message_size: 10MB
+
+imap:
+  host: 127.0.0.1
+  port: 1143  # Non-privileged port
+
+jmap:
+  host: 127.0.0.1
+  port: 8080
+  base_url: http://localhost:8080
+
+storage:
+  backend: filesystem
+  path: ./data/maildir
+
+# Simple processing chain
+processors:
+  - name: root
+    state: root
+    mailets:
+      - matcher: All
+        mailet: AddHeader
+        params:
+          name: X-RusMES
+          value: test
+
+  - name: transport
+    state: transport
+    mailets:
+      - matcher: RecipientIsLocal
+        mailet: LocalDelivery
+      - matcher: All
+        mailet: RemoteDelivery
+
+auth:
+  backend: file
+  path: ./data/users.db
+
+logging:
+  level: debug
+  format: text
+  output: stdout
+
+domains:
+  local_domains:
+    - localhost
+    - 127.0.0.1

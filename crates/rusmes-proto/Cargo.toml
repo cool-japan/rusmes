@@ -1,0 +1,23 @@
+[package]
+name = "rusmes-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core protocol types and traits for RusMES — mail addresses, message identifiers, domain types, and the mail state machine"
+keywords = ["email", "mail", "smtp", "imap", "protocol"]
+categories = ["email", "network-programming", "encoding"]
+documentation = "https://docs.rs/rusmes-proto"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }

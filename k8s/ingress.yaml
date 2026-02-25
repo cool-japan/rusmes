@@ -1,0 +1,147 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rusmes-jmap
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: jmap-ingress
+  annotations:
+    # Nginx ingress annotations
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # CORS headers for JMAP
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://mail.example.com,https://webmail.example.com"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    nginx.ingress.kubernetes.io/cors-max-age: "86400"
+
+    # Certificate management (cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/acme-challenge-type: "http01"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - mail.example.com
+    - jmap.example.com
+    secretName: rusmes-jmap-tls
+
+  rules:
+  - host: jmap.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: rusmes-jmap
+            port:
+              name: jmap
+
+  - host: mail.example.com
+    http:
+      paths:
+      - path: /.well-known/jmap
+        pathType: Prefix
+        backend:
+          service:
+            name: rusmes-jmap
+            port:
+              name: jmap
+      - path: /jmap
+        pathType: Prefix
+        backend:
+          service:
+            name: rusmes-jmap
+            port:
+              name: jmap
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rusmes-metrics
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: metrics-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Basic auth for metrics endpoint
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: rusmes-metrics-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required - Metrics Endpoint"
+
+    # Certificate management (cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/acme-challenge-type: "http01"
+
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - metrics.example.com
+    secretName: rusmes-metrics-tls
+
+  rules:
+  - host: metrics.example.com
+    http:
+      paths:
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: rusmes-metrics
+            port:
+              name: metrics
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rusmes-metrics-auth
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: metrics-auth
+  annotations:
+    description: "Basic auth credentials for metrics endpoint"
+type: Opaque
+data:
+  # htpasswd format: username:hashed_password
+  #
+  # Generate credentials:
+  # htpasswd -c auth prometheus
+  # Then base64 encode: cat auth | base64 -w0
+  #
+  # Default credentials (CHANGE IN PRODUCTION):
+  # Username: prometheus
+  # Password: changeme
+  #
+  # To generate new credentials:
+  # htpasswd -nb prometheus your-password | base64 -w0
+  auth: cHJvbWV0aGV1czokYXByMSRILkd3Y0VGTCRQVXY3UEx5UExUN3ZMNXhRWmROLi8wCg==

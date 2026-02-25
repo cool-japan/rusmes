@@ -1,0 +1,195 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rusmes
+  namespace: default
+  labels:
+    app: rusmes
+    component: mail-server
+spec:
+  serviceName: rusmes
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rusmes
+  template:
+    metadata:
+      labels:
+        app: rusmes
+        component: mail-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: rusmes
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+
+      initContainers:
+      - name: init-config
+        image: busybox:1.36
+        command: ['sh', '-c', 'cp /config-template/rusmes.toml /config/rusmes.toml']
+        volumeMounts:
+        - name: config-template
+          mountPath: /config-template
+        - name: config
+          mountPath: /config
+
+      containers:
+      - name: rusmes
+        image: rusmes/rusmes:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: smtp
+          containerPort: 25
+          protocol: TCP
+        - name: smtps
+          containerPort: 465
+          protocol: TCP
+        - name: submission
+          containerPort: 587
+          protocol: TCP
+        - name: imap
+          containerPort: 143
+          protocol: TCP
+        - name: imaps
+          containerPort: 993
+          protocol: TCP
+        - name: pop3
+          containerPort: 110
+          protocol: TCP
+        - name: pop3s
+          containerPort: 995
+          protocol: TCP
+        - name: jmap
+          containerPort: 8080
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        env:
+        - name: RUSMES_CONFIG
+          value: /config/rusmes.toml
+        - name: RUSMES_DATA_DIR
+          value: /data
+        - name: RUSMES_LOG_LEVEL
+          value: info
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: jmap
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: jmap
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        startupProbe:
+          httpGet:
+            path: /health
+            port: jmap
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: data
+          mountPath: /data
+        - name: tls-certs
+          mountPath: /certs
+          readOnly: true
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+
+      volumes:
+      - name: config-template
+        configMap:
+          name: rusmes-config
+      - name: config
+        emptyDir: {}
+      - name: tls-certs
+        secret:
+          secretName: rusmes-tls
+          defaultMode: 0400
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: rusmes
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 50Gi
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+
+  podManagementPolicy: Parallel
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rusmes
+  namespace: default
+  labels:
+    app: rusmes
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rusmes
+  namespace: default
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: rusmes

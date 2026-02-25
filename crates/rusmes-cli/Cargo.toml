@@ -1,0 +1,52 @@
+[package]
+name = "rusmes-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Administrative CLI tool for RusMES — user/mailbox/queue management, backup, restore, migration, metrics inspection, and configuration validation"
+keywords = ["email", "cli", "mail-server", "admin", "backup"]
+categories = ["email", "network-programming"]
+documentation = "https://docs.rs/rusmes-cli"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[[bin]]
+name = "rusmes"
+path = "src/main.rs"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+tracing = { workspace = true }
+indicatif = { workspace = true }
+sha2 = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+colored = { workspace = true }
+reqwest = { workspace = true }
+interprocess = { workspace = true }
+bcrypt = { workspace = true }
+tabled = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tar = { workspace = true }
+zstd = { workspace = true }
+flate2 = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+walkdir = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

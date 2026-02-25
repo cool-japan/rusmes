@@ -1,0 +1,86 @@
+# IMAP Commands Dictionary
+
+# Commands
+"LOGIN"
+"SELECT"
+"EXAMINE"
+"FETCH"
+"STORE"
+"SEARCH"
+"LIST"
+"LSUB"
+"SUBSCRIBE"
+"UNSUBSCRIBE"
+"CREATE"
+"DELETE"
+"RENAME"
+"APPEND"
+"COPY"
+"MOVE"
+"EXPUNGE"
+"CLOSE"
+"CAPABILITY"
+"LOGOUT"
+"NOOP"
+"IDLE"
+"NAMESPACE"
+"UID"
+
+# Tags
+"A001"
+"A002"
+"*"
+"+"
+
+# Fetch items
+"FLAGS"
+"BODY"
+"BODY.PEEK"
+"BODYSTRUCTURE"
+"ENVELOPE"
+"INTERNALDATE"
+"RFC822"
+"UID"
+
+# Flags
+"\\Seen"
+"\\Answered"
+"\\Flagged"
+"\\Deleted"
+"\\Draft"
+"\\Recent"
+
+# Special characters
+"{"
+"}"
+"("
+")"
+"["
+"]"
+"\""
+" "
+"\r\n"
+
+# Mailboxes
+"INBOX"
+"Sent"
+"Drafts"
+"Trash"
+
+# Literals
+"{10}"
+"{100}"
+"{1000}"
+"{10+}"
+"{100+}"
+
+# Search criteria
+"ALL"
+"NEW"
+"OLD"
+"SEEN"
+"UNSEEN"
+"FROM"
+"TO"
+"SUBJECT"
+"BODY"

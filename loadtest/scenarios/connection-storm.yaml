@@ -1,0 +1,65 @@
+# Connection Storm Scenario
+# Tests maximum concurrent connection handling
+
+name: "Connection Storm Test"
+description: "Opens 10,000 concurrent connections simultaneously"
+
+config:
+  target_host: "localhost"
+  target_port: 25
+  protocol: "smtp"
+  scenario: "concurrent-connections"
+
+  # Test parameters
+  duration_secs: 120
+  concurrency: 10000      # 10k simultaneous connections
+  message_rate: 100       # Low rate per connection
+  ramp_up_secs: 5         # Fast ramp-up
+
+  # Message configuration
+  message_size:
+    random:
+      min: 512
+      max: 4096
+  message_content: "random"
+
+  # Output
+  output_json: "/tmp/connection-storm-test.json"
+  output_html: "/tmp/connection-storm-test.html"
+  prometheus_export: true
+
+# Success criteria
+success_criteria:
+  min_concurrent_connections: 9000    # Maintain at least 9k connections
+  max_connection_time_ms: 1000        # Connection setup < 1s
+  min_success_rate: 0.98              # 98% success rate
+  max_memory_per_connection_kb: 100   # < 100KB per connection
+
+# Test iterations
+iterations: 5
+
+# System limits to verify before test
+system_requirements:
+  min_file_descriptors: 20000
+  min_memory_gb: 4
+  min_cpu_cores: 8
+
+# Notes
+notes: |
+  This test validates:
+  - Connection pool management
+  - File descriptor handling
+  - Memory usage per connection
+  - Connection timeout handling
+  - Listener backlog handling
+
+  Before running:
+  - Set system file descriptor limits: ulimit -n 65536
+  - Ensure sufficient kernel buffers: sysctl -w net.core.somaxconn=65536
+  - Monitor system resources during test
+
+  Expected metrics:
+  - Memory: ~1GB for 10k connections (100KB each)
+  - File descriptors: ~10k active
+  - Connection setup time: < 1 second
+  - CPU usage: moderate during connection establishment

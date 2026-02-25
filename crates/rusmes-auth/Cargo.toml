@@ -1,0 +1,54 @@
+[package]
+name = "rusmes-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pluggable authentication backends for RusMES — File, LDAP, SQL, OAuth2/OIDC, PAM, and SASL (PLAIN/LOGIN/CRAM-MD5/SCRAM-SHA-256/XOAUTH2) with brute-force protection"
+keywords = ["authentication", "email", "ldap", "oauth2", "sasl"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-auth"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bcrypt = { workspace = true }
+ldap3 = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "any"] }
+argon2 = { workspace = true }
+oauth2 = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+# reqwest uses workspace version; reqwest 0.11 is defined in workspace deps
+reqwest = { workspace = true }
+# pam is a C binding — only compiled when explicitly opted in via `pam-auth` feature.
+# This satisfies the Pure Rust default policy and avoids RUSTSEC-2023-0040/0059.
+pam = { workspace = true, optional = true }
+libc = { workspace = true }
+# getrandom is used for cryptographically secure random bytes (nonce/challenge generation)
+# This replaces rand::random() with getrandom::getrandom() for pure-Rust CSRNG.
+getrandom = { workspace = true }
+pbkdf2 = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+
+[features]
+default = []
+# pam-auth feature enables PAM (Pluggable Authentication Modules) support.
+# This is intentionally NOT in default features because pam pulls in C bindings (libc/libpam)
+# and has associated security advisories (RUSTSEC-2023-0040, RUSTSEC-2023-0059).
+# Enable with: cargo build --features pam-auth
+pam-auth = ["dep:pam"]
+
+[dev-dependencies]
+tokio-test = { workspace = true }

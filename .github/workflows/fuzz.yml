@@ -1,0 +1,158 @@
+name: Fuzz Testing
+
+on:
+  # Run nightly at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      time_limit:
+        description: 'Time limit per target in seconds'
+        required: false
+        default: '3600'
+  # Run on PRs that modify parsers
+  pull_request:
+    paths:
+      - 'crates/rusmes-smtp/src/parser.rs'
+      - 'crates/rusmes-imap/src/command.rs'
+      - 'crates/rusmes-proto/src/mime.rs'
+      - 'crates/rusmes-proto/src/address.rs'
+      - 'crates/rusmes-core/src/sieve/parser.rs'
+      - 'crates/rusmes-jmap/src/types.rs'
+      - 'fuzz/**'
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_smtp_parser
+          - fuzz_imap_parser
+          - fuzz_mime_parser
+          - fuzz_email_address
+          - fuzz_sieve_parser
+          - fuzz_jmap_json
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Cache fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzz test (PR - quick check)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300 -runs=100000
+
+      - name: Run fuzz test (Scheduled - full)
+        if: github.event_name == 'schedule'
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=3600
+
+      - name: Run fuzz test (Manual)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ github.event.inputs.time_limit }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+
+      - name: Create issue on crash
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const target = '${{ matrix.target }}';
+            const artifactsPath = `fuzz/artifacts/${target}`;
+
+            let crashes = [];
+            if (fs.existsSync(artifactsPath)) {
+              crashes = fs.readdirSync(artifactsPath)
+                .filter(f => f.startsWith('crash-'))
+                .slice(0, 5);  // Limit to first 5 crashes
+            }
+
+            const body = `## Fuzz Test Crash Detected
+
+            **Target:** \`${target}\`
+            **Run:** ${context.runId}
+            **Workflow:** ${context.workflow}
+
+            ### Details
+
+            A crash was detected during nightly fuzz testing.
+
+            ${crashes.length > 0 ? `
+            ### Crash Files Found
+
+            ${crashes.map(c => `- \`${c}\``).join('\n')}
+
+            Download artifacts to reproduce:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            ` : ''}
+
+            ### Reproducing
+
+            \`\`\`bash
+            # Download the crash artifact from the GitHub Actions run
+            cd fuzz
+            cargo +nightly fuzz run ${target} artifacts/${target}/crash-*
+            \`\`\`
+
+            ### Next Steps
+
+            1. Download the crash artifact
+            2. Reproduce the crash locally
+            3. Debug and fix the issue
+            4. Add the crash input to the corpus if appropriate
+            5. Verify the fix with the fuzz test
+
+            ---
+            *Automated issue created by fuzz testing workflow*
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[FUZZ] Crash in ${target}`,
+              body: body,
+              labels: ['bug', 'security', 'fuzzing', 'priority-high']
+            });
+
+  summary:
+    name: Fuzz Testing Summary
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.fuzz.result }}" == "failure" ]; then
+            echo "::error::One or more fuzz tests found crashes"
+            exit 1
+          fi
+          echo "All fuzz tests passed successfully"

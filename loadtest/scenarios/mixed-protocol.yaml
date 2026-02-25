@@ -1,0 +1,87 @@
+# Mixed Protocol Scenario
+# Tests realistic mixed workload across protocols
+
+name: "Mixed Protocol Test"
+description: "70% SMTP, 20% IMAP, 10% JMAP workload"
+
+config:
+  target_host: "localhost"
+  target_port: 25
+  protocol: "mixed"
+  scenario: "mixed-protocol"
+
+  # Test parameters
+  duration_secs: 600      # 10 minutes
+  concurrency: 1000
+  message_rate: 5000      # 5k operations/sec total
+  ramp_up_secs: 30
+
+  # Protocol distribution
+  mixed_weights:
+    - 70   # SMTP
+    - 20   # IMAP
+    - 10   # JMAP
+    - 0    # POP3
+
+  # Message configuration
+  message_size:
+    random:
+      min: 1024
+      max: 51200
+  message_content: "real_world"
+
+  # Output
+  output_json: "/tmp/mixed-protocol-test.json"
+  output_html: "/tmp/mixed-protocol-test.html"
+  output_csv: "/tmp/mixed-protocol-test.csv"
+  prometheus_export: true
+
+# Success criteria
+success_criteria:
+  smtp:
+    min_throughput: 3400          # 70% of 5000
+    max_p99_latency_ms: 150
+    min_success_rate: 0.99
+
+  imap:
+    min_throughput: 950           # 20% of 5000
+    max_p99_latency_ms: 100
+    min_success_rate: 0.99
+
+  jmap:
+    min_throughput: 450           # 10% of 5000
+    max_p99_latency_ms: 80
+    min_success_rate: 0.99
+
+# Test iterations
+iterations: 5
+
+# Workload profile
+workload_profile:
+  smtp_operations:
+    - send_message: 80%
+    - send_with_attachment: 20%
+
+  imap_operations:
+    - fetch_messages: 60%
+    - search: 25%
+    - sync: 15%
+
+  jmap_operations:
+    - query_emails: 70%
+    - get_emails: 30%
+
+# Notes
+notes: |
+  This test simulates realistic production workload:
+  - 70% SMTP: Message sending (80% simple, 20% with attachments)
+  - 20% IMAP: Message retrieval and search
+  - 10% JMAP: Modern API access
+
+  Validates:
+  - Protocol interoperability
+  - Resource allocation across protocols
+  - Fair scheduling
+  - Performance isolation
+
+  Monitor per-protocol metrics separately.

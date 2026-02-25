@@ -1,0 +1,34 @@
+[package]
+name = "rusmes-jmap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "JMAP server for RusMES — RFC 8620/8621 HTTP/JSON mail API with Email, Mailbox, Thread, Blob, EventSource push, and VacationResponse support"
+keywords = ["jmap", "email", "mail-server", "http", "json"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-jmap"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+hyper = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }

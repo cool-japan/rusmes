@@ -1,0 +1,29 @@
+[package]
+name = "rusmes-pop3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Async POP3 server for RusMES — RFC 1939 compliant with APOP, STLS (STARTTLS), and CAPA extension support"
+keywords = ["pop3", "email", "mail-server", "async", "tls"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-pop3"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+nom = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }

@@ -1,0 +1,64 @@
+# Sustained Load Test Scenario
+# Tests system stability over extended period
+
+name: "Sustained Load Test"
+description: "Maintains 10,000 msg/sec for 24 hours to detect memory leaks"
+
+config:
+  target_host: "localhost"
+  target_port: 25
+  protocol: "smtp"
+  scenario: "sustained-load"
+
+  # Test parameters
+  duration_secs: 86400    # 24 hours
+  concurrency: 1000
+  message_rate: 10000     # 10k msg/sec
+  ramp_up_secs: 60
+
+  # Message configuration
+  message_size:
+    random:
+      min: 2048
+      max: 51200
+  message_content: "random"
+
+  # Output
+  output_json: "/tmp/sustained-load-test.json"
+  output_html: "/tmp/sustained-load-test.html"
+  prometheus_export: true
+  prometheus_port: 9090
+
+# Success criteria
+success_criteria:
+  min_throughput: 9500           # At least 9.5k msg/sec
+  max_p99_latency_ms: 100        # p99 latency under 100ms
+  min_success_rate: 0.995        # 99.5% success rate
+  max_memory_growth_mb: 100      # Memory growth < 100MB over 24h
+  max_error_rate: 0.005          # Less than 0.5% errors
+
+# Test iterations
+iterations: 5
+
+# Monitoring checkpoints (hours)
+checkpoints:
+  - 1
+  - 6
+  - 12
+  - 18
+  - 24
+
+# Notes
+notes: |
+  This soak test validates long-term stability and detects:
+  - Memory leaks
+  - Resource exhaustion
+  - Connection pool issues
+  - File descriptor leaks
+
+  Monitor system metrics throughout the test:
+  - Memory usage (RSS, heap)
+  - CPU usage
+  - File descriptors
+  - Network connections
+  - Disk I/O

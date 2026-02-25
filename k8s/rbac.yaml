@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rusmes
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: mail-server
+automountServiceAccountToken: true
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rusmes
+  namespace: rusmes
+  labels:
+    app: rusmes
+rules:
+# Read-only access to ConfigMaps
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to Secrets
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to Pods (for service discovery)
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to Services (for service discovery)
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to Endpoints (for service discovery)
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["get", "list", "watch"]
+
+# Events for logging
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rusmes
+  namespace: rusmes
+  labels:
+    app: rusmes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rusmes
+subjects:
+- kind: ServiceAccount
+  name: rusmes
+  namespace: rusmes

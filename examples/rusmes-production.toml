@@ -1,0 +1,196 @@
+# RusMES Production Configuration
+# Hardened setup for production deployment
+
+domain = "mail.example.com"
+postmaster = "postmaster@example.com"
+hostname = "mx1.example.com"
+
+# ===== SMTP - Production Settings =====
+[smtp]
+host = "0.0.0.0"
+port = 25
+tls_port = 587
+
+# Strict limits for production
+max_connections = 1000
+max_connections_per_ip = 5
+connection_timeout = "120s"
+max_message_size = "25MB"
+max_recipients_per_message = 50
+
+# Enable all modern SMTP extensions
+enable_pipelining = true
+enable_8bitmime = true
+enable_smtputf8 = true
+
+# Require authentication for relay
+require_auth_for_relay = true
+auth_mechanisms = ["PLAIN", "LOGIN"]
+
+# TLS configuration with strong ciphers
+tls_cert = "/etc/letsencrypt/live/mail.example.com/fullchain.pem"
+tls_key = "/etc/letsencrypt/live/mail.example.com/privkey.pem"
+require_tls = true
+
+# Aggressive rate limiting
+[smtp.rate_limit]
+max_messages_per_hour = 50
+window_duration = "1h"
+
+# ===== IMAP - Production Settings =====
+[imap]
+host = "0.0.0.0"
+port = 143
+tls_port = 993
+
+max_connections = 500
+idle_timeout = "10m"
+
+tls_cert = "/etc/letsencrypt/live/mail.example.com/fullchain.pem"
+tls_key = "/etc/letsencrypt/live/mail.example.com/privkey.pem"
+
+# ===== JMAP - Production Settings =====
+[jmap]
+host = "0.0.0.0"
+port = 8080
+base_url = "https://mail.example.com"
+
+max_upload_size = "25MB"
+
+tls_cert = "/etc/letsencrypt/live/mail.example.com/fullchain.pem"
+tls_key = "/etc/letsencrypt/live/mail.example.com/privkey.pem"
+
+# ===== Storage - PostgreSQL for Production =====
+[storage]
+backend = "postgres"
+
+[storage.postgres]
+connection_string = "postgresql://rusmes:CHANGEME@localhost/rusmes"
+pool_size = 50
+
+# ===== Mail Processing - Security Focused =====
+
+# Root processor with all security checks
+[[processors]]
+name = "root"
+state = "root"
+thread_pool_size = 20
+
+# Virus scanning - REJECT on virus
+[[processors.mailets]]
+matcher = "All"
+mailet = "VirusScan"
+params = { reject_on_virus = "true" }
+
+# SPF strict checking
+[[processors.mailets]]
+matcher = "All"
+mailet = "SpfCheck"
+params = { reject_on_fail = "true" }
+
+# DKIM strict verification
+[[processors.mailets]]
+matcher = "All"
+mailet = "DkimVerify"
+params = { reject_on_fail = "true" }
+
+# DMARC policy enforcement
+[[processors.mailets]]
+matcher = "All"
+mailet = "DmarcVerify"
+params = { honor_policy = "true" }
+
+# Aggressive spam filtering
+[[processors.mailets]]
+matcher = "All"
+mailet = "SpamAssassin"
+params = { threshold = "3.0", reject_spam = "true" }
+
+# Add security headers
+[[processors.mailets]]
+matcher = "All"
+mailet = "AddHeader"
+params = { name = "X-Mail-Server", value = "RusMES" }
+
+# Transport processor
+[[processors]]
+name = "transport"
+state = "transport"
+thread_pool_size = 10
+
+[[processors.mailets]]
+matcher = "RecipientIsLocal"
+mailet = "LocalDelivery"
+
+[[processors.mailets]]
+matcher = "All"
+mailet = "RemoteDelivery"
+params = { max_retries = "3", retry_delay = "300s" }
+
+# ===== Authentication - LDAP for Production =====
+[auth]
+backend = "ldap"
+
+[auth.ldap]
+url = "ldaps://ldap.example.com:636"
+base_dn = "ou=users,dc=example,dc=com"
+bind_dn = "cn=rusmes,ou=services,dc=example,dc=com"
+bind_password = "CHANGEME"
+user_filter = "(mail={username})"
+tls_verify = true
+
+# ===== Metrics - Enabled for Monitoring =====
+[metrics]
+enabled = true
+bind_address = "127.0.0.1:9090"
+path = "/metrics"
+
+# ===== Logging - Structured JSON for Production =====
+[logging]
+level = "info"
+format = "json"
+
+[logging.file]
+path = "/var/log/rusmes/rusmes.log"
+max_size = "100MB"
+max_backups = 10
+compress = true
+
+# ===== Queue - Conservative Settings =====
+[queue]
+initial_delay = "300s"
+max_delay = "7200s"
+backoff_multiplier = 2.0
+max_attempts = 3
+
+worker_threads = 10
+batch_size = 50
+
+# ===== Security - Strict Settings =====
+[security]
+# Only allow relay from internal networks
+relay_networks = ["10.0.0.0/8", "172.16.0.0/12"]
+
+# Block known bad actors
+blocked_ips = []
+
+# Strict recipient validation
+check_recipient_exists = true
+reject_unknown_recipients = true
+
+# ===== Domains =====
+[domains]
+local_domains = ["example.com", "www.example.com", "mail.example.com"]
+
+[domains.aliases]
+"abuse@example.com" = "security@example.com"
+"postmaster@example.com" = "admin@example.com"
+"security@example.com" = "admin@example.com"
+
+# ===== Performance =====
+[performance]
+worker_threads = 8
+smtp_pool_size = 200
+imap_pool_size = 100
+read_buffer_size = "128KB"
+write_buffer_size = "128KB"

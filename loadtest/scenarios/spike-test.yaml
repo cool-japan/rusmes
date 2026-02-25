@@ -1,0 +1,70 @@
+# Spike Test Scenario
+# Tests system recovery from sudden traffic surge
+
+name: "Spike Test"
+description: "Ramps from 1,000 to 100,000 msg/sec in 10 seconds"
+
+config:
+  target_host: "localhost"
+  target_port: 25
+  protocol: "smtp"
+  scenario: "smtp-throughput"
+
+  # Test parameters
+  duration_secs: 180      # 3 minutes total
+  concurrency: 10000
+  message_rate: 100000    # Peak: 100k msg/sec
+  ramp_up_secs: 10        # Aggressive ramp-up
+
+  # Message configuration
+  message_size:
+    fixed: 4096           # Fixed 4KB messages
+  message_content: "random"
+
+  # Output
+  output_json: "/tmp/spike-test.json"
+  output_html: "/tmp/spike-test.html"
+  output_csv: "/tmp/spike-test.csv"
+  prometheus_export: true
+
+# Success criteria
+success_criteria:
+  max_p99_latency_ms: 500        # p99 latency under 500ms during spike
+  min_success_rate: 0.95         # 95% success rate (some failures expected)
+  recovery_time_secs: 30         # System recovers within 30s after spike
+  max_queue_depth: 100000        # Queue depth stays under 100k
+
+# Test phases
+phases:
+  baseline:
+    duration_secs: 30
+    rate: 1000
+    description: "Baseline load"
+
+  spike:
+    duration_secs: 60
+    rate: 100000
+    description: "Traffic spike"
+
+  recovery:
+    duration_secs: 90
+    rate: 1000
+    description: "Recovery to baseline"
+
+# Test iterations
+iterations: 5
+
+# Notes
+notes: |
+  This spike test validates:
+  - System behavior under sudden load increase
+  - Queue management
+  - Backpressure handling
+  - Recovery characteristics
+  - Error handling
+
+  Expected behavior:
+  - Some request failures during spike are acceptable
+  - Queue depth should increase but remain bounded
+  - System should recover to baseline within 30 seconds
+  - No crashes or permanent degradation

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rusmes
+  labels:
+    name: rusmes
+    app: rusmes
+    environment: production
+  annotations:
+    description: "RusMES - Rust Mail Enterprise Server"
+    contact: "admin@example.com"

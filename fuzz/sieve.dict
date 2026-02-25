@@ -1,0 +1,81 @@
+# Sieve Script Dictionary
+
+# Commands
+"require"
+"if"
+"elsif"
+"else"
+"keep"
+"discard"
+"stop"
+"fileinto"
+"redirect"
+"set"
+"vacation"
+
+# Tests
+"true"
+"false"
+"header"
+"address"
+"envelope"
+"exists"
+"size"
+"allof"
+"anyof"
+"not"
+
+# Match types
+":is"
+":contains"
+":matches"
+":over"
+":under"
+
+# Tags
+":comparator"
+":days"
+":subject"
+":from"
+":addresses"
+
+# Extensions
+"fileinto"
+"envelope"
+"variables"
+"vacation"
+"relational"
+"regex"
+
+# Comparators
+"i;ascii-casemap"
+"i;octet"
+
+# Special characters
+"{"
+"}"
+"["
+"]"
+"("
+")"
+"\""
+";"
+","
+":"
+
+# Headers
+"Subject"
+"From"
+"To"
+"Cc"
+
+# Size units
+"K"
+"M"
+"G"
+
+# Common strings
+"Spam"
+"INBOX"
+"INBOX.Spam"
+"INBOX.Trash"

@@ -1,0 +1,32 @@
+[package]
+name = "rusmes-imap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Async IMAP4rev2 server for RusMES — RFC 9051 compliant with CONDSTORE, QRESYNC, UIDPLUS, MOVE, IDLE, NAMESPACE, and SPECIAL-USE extensions"
+keywords = ["imap", "email", "mail-server", "async", "tls"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-imap"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+nom = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

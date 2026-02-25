@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+
+# Cargo
+**/Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Linux
+*.swp
+*~
+
+# Large binary test files
+test_security_api
+
+# Windows
+Thumbs.db
+Desktop.ini

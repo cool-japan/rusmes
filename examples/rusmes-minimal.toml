@@ -1,0 +1,61 @@
+# RusMES Minimal Configuration
+# Simple setup for testing and development
+
+domain = "localhost"
+postmaster = "postmaster@localhost"
+
+[smtp]
+host = "127.0.0.1"
+port = 2525  # Non-privileged port for development
+max_message_size = "10MB"
+
+[imap]
+host = "127.0.0.1"
+port = 1143  # Non-privileged port
+
+[jmap]
+host = "127.0.0.1"
+port = 8080
+base_url = "http://localhost:8080"
+
+[storage]
+backend = "filesystem"
+
+[storage.filesystem]
+mailbox_path = "./data/mailboxes"
+queue_path = "./data/queue"
+
+# Simple processing chain
+[[processors]]
+name = "root"
+state = "root"
+
+[[processors.mailets]]
+matcher = "All"
+mailet = "AddHeader"
+params = { name = "X-RusMES", value = "test" }
+
+[[processors]]
+name = "transport"
+state = "transport"
+
+[[processors.mailets]]
+matcher = "RecipientIsLocal"
+mailet = "LocalDelivery"
+
+[[processors.mailets]]
+matcher = "All"
+mailet = "RemoteDelivery"
+
+[auth]
+backend = "file"
+
+[auth.file]
+path = "./data/users.db"
+
+[logging]
+level = "debug"
+format = "text"
+
+[domains]
+local_domains = ["localhost", "127.0.0.1"]

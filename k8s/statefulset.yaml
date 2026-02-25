@@ -1,0 +1,244 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rusmes
+  namespace: rusmes
+  labels:
+    app: rusmes
+    component: mail-server
+    version: v0.1.0
+spec:
+  serviceName: rusmes-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rusmes
+      component: mail-server
+
+  template:
+    metadata:
+      labels:
+        app: rusmes
+        component: mail-server
+        version: v0.1.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      serviceAccountName: rusmes
+      securityContext:
+        fsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+      - name: init-config
+        image: busybox:1.36
+        command: ['sh', '-c', 'cp /config-template/rusmes.toml /config/rusmes.toml && chown 999:999 /config/rusmes.toml']
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+        volumeMounts:
+        - name: config-template
+          mountPath: /config-template
+        - name: config
+          mountPath: /config
+
+      - name: init-data-dir
+        image: busybox:1.36
+        command: ['sh', '-c', 'mkdir -p /var/lib/rusmes/mailboxes /var/lib/rusmes/queue /var/lib/rusmes/search && chown -R 999:999 /var/lib/rusmes']
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rusmes
+
+      containers:
+      - name: rusmes
+        image: rusmes/rusmes:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: smtp
+          containerPort: 25
+          protocol: TCP
+        - name: smtps
+          containerPort: 465
+          protocol: TCP
+        - name: submission
+          containerPort: 587
+          protocol: TCP
+        - name: imap
+          containerPort: 143
+          protocol: TCP
+        - name: imaps
+          containerPort: 993
+          protocol: TCP
+        - name: pop3
+          containerPort: 110
+          protocol: TCP
+        - name: pop3s
+          containerPort: 995
+          protocol: TCP
+        - name: jmap
+          containerPort: 8080
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        env:
+        - name: RUSMES_CONFIG
+          value: /etc/rusmes/rusmes.toml
+        - name: RUSMES_DATA_DIR
+          value: /var/lib/rusmes
+        - name: RUST_LOG
+          value: info
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rusmes-db
+              key: POSTGRES_PASSWORD
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+            ephemeral-storage: "2Gi"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+            ephemeral-storage: "5Gi"
+
+        livenessProbe:
+          tcpSocket:
+            port: smtp
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        startupProbe:
+          httpGet:
+            path: /health
+            port: metrics
+            scheme: HTTP
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+
+        volumeMounts:
+        - name: config
+          mountPath: /etc/rusmes
+        - name: data
+          mountPath: /var/lib/rusmes
+        - name: tls-certs
+          mountPath: /etc/rusmes/certs
+          readOnly: true
+        - name: dkim-key
+          mountPath: /etc/rusmes/dkim
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 999
+
+      volumes:
+      - name: config-template
+        configMap:
+          name: rusmes-config
+          defaultMode: 0644
+      - name: config
+        emptyDir: {}
+      - name: tls-certs
+        secret:
+          secretName: rusmes-tls
+          defaultMode: 0400
+      - name: dkim-key
+        secret:
+          secretName: rusmes-dkim
+          defaultMode: 0400
+      - name: tmp
+        emptyDir: {}
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: rusmes
+        component: mail-server
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 50Gi
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+
+  podManagementPolicy: Parallel
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rusmes
+  namespace: rusmes
+  labels:
+    app: rusmes
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: rusmes
+      component: mail-server

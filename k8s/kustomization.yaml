@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kustomization file for RusMES deployment
+# Usage: kubectl apply -k .
+
+namespace: rusmes
+
+# Resources to include in deployment
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - secrets.yaml
+  - pvc.yaml
+  - statefulset.yaml
+  - service.yaml
+  - ingress.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app: rusmes
+  managed-by: kustomize
+
+# Common annotations
+commonAnnotations:
+  version: v0.1.0
+  component: mail-server
+
+# Images to use (override with kustomize edit set image)
+images:
+  - name: rusmes/rusmes
+    newTag: latest
+
+# ConfigMap generator (optional - alternative to configmap.yaml)
+# configMapGenerator:
+#   - name: rusmes-config
+#     files:
+#       - rusmes.toml
+
+# Secret generator (optional - alternative to secrets.yaml)
+# secretGenerator:
+#   - name: rusmes-tls
+#     type: kubernetes.io/tls
+#     files:
+#       - tls.crt=path/to/tls.crt
+#       - tls.key=path/to/tls.key
+
+# Replicas override
+# replicas:
+#   - name: rusmes
+#     count: 5
+
+# Resource patches (example: change replicas)
+# patches:
+#   - target:
+#       kind: StatefulSet
+#       name: rusmes
+#     patch: |-
+#       - op: replace
+#         path: /spec/replicas
+#         value: 5

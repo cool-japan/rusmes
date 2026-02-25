@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  rusmes:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: rusmes:test
+    container_name: rusmes-test
+    ports:
+      - "25:25"       # SMTP
+      - "587:587"     # SMTP Submission
+      - "143:143"     # IMAP
+      - "993:993"     # IMAPS
+      - "110:110"     # POP3
+      - "995:995"     # POP3S
+      - "8080:8080"   # JMAP
+    volumes:
+      - rusmes-data:/var/lib/rusmes
+      - ./test-config.toml:/etc/rusmes/config.toml
+    environment:
+      - RUST_LOG=debug
+      - RUSMES_CONFIG=/etc/rusmes/config.toml
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "25"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: rusmes-postgres-test
+    environment:
+      POSTGRES_DB: rusmes_test
+      POSTGRES_USER: rusmes
+      POSTGRES_PASSWORD: rusmes_test_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rusmes"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: rusmes-redis-test
+    ports:
+      - "6379:6379"
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: rusmes-clamav-test
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav-data:/var/lib/clamav
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD", "clamdscan", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  spamassassin:
+    image: instantlinux/spamassassin:latest
+    container_name: rusmes-spamassassin-test
+    ports:
+      - "783:783"
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD", "spamc", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  ldap:
+    image: osixia/openldap:latest
+    container_name: rusmes-ldap-test
+    environment:
+      LDAP_ORGANISATION: "RusMES Test"
+      LDAP_DOMAIN: "test.local"
+      LDAP_ADMIN_PASSWORD: "admin123"
+    ports:
+      - "389:389"
+      - "636:636"
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+    networks:
+      - rusmes-test-net
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=test,dc=local"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: rusmes-mailhog-test
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    networks:
+      - rusmes-test-net
+
+networks:
+  rusmes-test-net:
+    driver: bridge
+
+volumes:
+  rusmes-data:
+  postgres-data:
+  clamav-data:
+  ldap-data:
+  ldap-config:

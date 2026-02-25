@@ -1,0 +1,46 @@
+apiVersion: v2
+name: rusmes
+description: RusMES - Rust Mail Enterprise Server Helm Chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/example/rusmes
+sources:
+  - https://github.com/example/rusmes
+maintainers:
+  - name: RusMES Team
+    email: team@rusmes.example.com
+
+keywords:
+  - mail
+  - email
+  - smtp
+  - imap
+  - pop3
+  - jmap
+
+dependencies:
+  - name: postgresql
+    version: "^13.0.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+    tags:
+      - rusmes-database
+
+  - name: prometheus
+    version: "^25.0.0"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+    tags:
+      - rusmes-monitoring
+
+  - name: grafana
+    version: "^8.0.0"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled
+    tags:
+      - rusmes-monitoring
+
+annotations:
+  category: Infrastructure
+  licenses: Apache-2.0 OR MIT

@@ -1,0 +1,42 @@
+[package]
+name = "rusmes-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Mailet processing engine for RusMES — composable mail processing pipeline with matchers, mailets, DKIM/SPF/DMARC, spam filtering, and AI integration"
+keywords = ["email", "mailet", "spam", "dkim", "mail-processing"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-core"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.0" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+hickory-resolver = { workspace = true }
+ipnetwork = { workspace = true }
+rsa = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+hostname = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+mockall = { workspace = true }

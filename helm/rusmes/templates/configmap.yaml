@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rusmes.fullname" . }}-config
+  labels:
+    {{- include "rusmes.labels" . | nindent 4 }}
+data:
+  rusmes.toml: |
+    # RusMES Configuration File
+
+    [server]
+    hostname = {{ .Values.config.hostname | quote }}
+    data_dir = "/data"
+
+    [smtp]
+    enabled = {{ .Values.config.smtp.enabled }}
+    bind_addr = "0.0.0.0:25"
+    bind_addr_tls = "0.0.0.0:465"
+    bind_addr_submission = "0.0.0.0:587"
+    {{- if .Values.tls.enabled }}
+    tls_cert = "/certs/tls.crt"
+    tls_key = "/certs/tls.key"
+    {{- end }}
+    max_message_size = {{ .Values.config.maxMessageSize }}
+    max_recipients = {{ .Values.config.maxRecipients }}
+    max_connections = {{ .Values.config.maxConnections }}
+    timeout = {{ .Values.config.smtp.timeout }}
+
+    [smtp.limits]
+    rate_limit = {{ .Values.config.smtp.rateLimitRps }}
+    rate_window = 60
+
+    [imap]
+    enabled = {{ .Values.config.imap.enabled }}
+    bind_addr = "0.0.0.0:143"
+    bind_addr_tls = "0.0.0.0:993"
+    {{- if .Values.tls.enabled }}
+    tls_cert = "/certs/tls.crt"
+    tls_key = "/certs/tls.key"
+    {{- end }}
+    max_connections = {{ .Values.config.maxConnections }}
+    timeout = {{ .Values.config.imap.timeout }}
+
+    [pop3]
+    enabled = {{ .Values.config.pop3.enabled }}
+    bind_addr = "0.0.0.0:110"
+    bind_addr_tls = "0.0.0.0:995"
+    {{- if .Values.tls.enabled }}
+    tls_cert = "/certs/tls.crt"
+    tls_key = "/certs/tls.key"
+    {{- end }}
+    max_connections = 500
+    timeout = {{ .Values.config.pop3.timeout }}
+
+    [jmap]
+    enabled = {{ .Values.config.jmap.enabled }}
+    bind_addr = "0.0.0.0:8080"
+    {{- if .Values.tls.enabled }}
+    tls_cert = "/certs/tls.crt"
+    tls_key = "/certs/tls.key"
+    {{- end }}
+    max_upload_size = {{ .Values.config.jmap.maxUploadSize }}
+    max_concurrent_requests = {{ .Values.config.jmap.maxConcurrentRequests }}
+
+    [storage]
+    backend = "postgres"
+
+    [storage.postgres]
+    host = {{ include "rusmes.postgresql.host" . | quote }}
+    port = {{ include "rusmes.postgresql.port" . }}
+    database = {{ include "rusmes.postgresql.database" . | quote }}
+    username = {{ include "rusmes.postgresql.username" . | quote }}
+    password = "${POSTGRES_PASSWORD}"
+    max_connections = 100
+
+    [storage.message_store]
+    type = "filesystem"
+    path = "/data/messages"
+
+    [auth]
+    backend = "postgres"
+    password_hash = "bcrypt"
+
+    [search]
+    enabled = {{ .Values.config.search.enabled }}
+    index_path = "/data/search"
+
+    [metrics]
+    enabled = {{ .Values.config.metrics.enabled }}
+    bind_addr = "0.0.0.0:9090"
+
+    [logging]
+    level = {{ .Values.config.logging.level | quote }}
+    format = {{ .Values.config.logging.format | quote }}
+
+    [security]
+    enable_dkim = {{ .Values.config.security.enableDkim }}
+    enable_spf = {{ .Values.config.security.enableSpf }}
+    enable_dmarc = {{ .Values.config.security.enableDmarc }}
+
+    [security.antispam]
+    enabled = {{ .Values.config.security.antispam.enabled }}
+    spam_threshold = {{ .Values.config.security.antispam.spamThreshold }}

@@ -1,0 +1,46 @@
+[package]
+name = "rusmes-acme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "ACME v2 client for RusMES — automatic TLS certificate provisioning and renewal with HTTP-01 and DNS-01 challenge support via Let's Encrypt"
+keywords = ["acme", "tls", "certificate", "lets-encrypt", "email"]
+categories = ["email", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/rusmes-acme"
+homepage = "https://github.com/cool-japan/rusmes"
+repository = "https://github.com/cool-japan/rusmes"
+readme = "README.md"
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# ACME protocol
+instant-acme = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# Certificate generation and parsing
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+pem-rfc7468 = { workspace = true }
+
+# Async utilities
+async-trait = { workspace = true }
+
+# Base64 encoding
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }

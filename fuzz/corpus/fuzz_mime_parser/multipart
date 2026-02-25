@@ -1,0 +1,11 @@
+Content-Type: multipart/mixed; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain
+
+Part 1
+--boundary123
+Content-Type: text/html
+
+<p>Part 2</p>
+--boundary123--

@@ -1,0 +1,75 @@
+# SMTP Commands Dictionary
+# Used by libFuzzer to generate better test cases
+
+# Commands
+"HELO"
+"EHLO"
+"MAIL FROM:"
+"RCPT TO:"
+"DATA"
+"BDAT"
+"RSET"
+"NOOP"
+"QUIT"
+"VRFY"
+"EXPN"
+"HELP"
+"STARTTLS"
+"AUTH"
+
+# Parameters
+"SIZE="
+"BODY="
+"8BITMIME"
+"7BIT"
+"SMTPUTF8"
+"RET="
+"FULL"
+"HDRS"
+"ENVID="
+"NOTIFY="
+"SUCCESS"
+"FAILURE"
+"DELAY"
+
+# Auth mechanisms
+"PLAIN"
+"LOGIN"
+"CRAM-MD5"
+"DIGEST-MD5"
+"GSSAPI"
+"XOAUTH2"
+
+# Special characters
+"<"
+">"
+"@"
+":"
+"="
+" "
+"\r\n"
+"\n"
+"\r"
+
+# Common domains
+"example.com"
+"localhost"
+"mail.example.com"
+
+# Common addresses
+"user@example.com"
+"postmaster@example.com"
+"abuse@example.com"
+
+# Numbers
+"0"
+"1"
+"100"
+"1024"
+"65536"
+"2147483647"
+
+# Edge cases
+"LAST"
+""
+"\0"

@@ -1,0 +1,72 @@
+[package]
+name = "rusmes-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+
+[dependencies.rusmes-proto]
+path = "../crates/rusmes-proto"
+version = "0.1.0"
+
+[dependencies.rusmes-smtp]
+path = "../crates/rusmes-smtp"
+version = "0.1.0"
+
+[dependencies.rusmes-imap]
+path = "../crates/rusmes-imap"
+version = "0.1.0"
+
+[dependencies.rusmes-core]
+path = "../crates/rusmes-core"
+version = "0.1.0"
+
+[dependencies.rusmes-jmap]
+path = "../crates/rusmes-jmap"
+version = "0.1.0"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_smtp_parser"
+path = "fuzz_targets/fuzz_smtp_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_imap_parser"
+path = "fuzz_targets/fuzz_imap_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_mime_parser"
+path = "fuzz_targets/fuzz_mime_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_email_address"
+path = "fuzz_targets/fuzz_email_address.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_sieve_parser"
+path = "fuzz_targets/fuzz_sieve_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jmap_json"
+path = "fuzz_targets/fuzz_jmap_json.rs"
+test = false
+doc = false

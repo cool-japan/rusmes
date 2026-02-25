@@ -1,0 +1,308 @@
+# RusMES Production Values
+# This file contains production-ready configuration examples
+
+# Number of replicas for high availability
+replicaCount: 5
+
+image:
+  repository: rusmes/rusmes
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"  # Use specific version in production
+
+# Image pull secrets for private registries
+imagePullSecrets: []
+# - name: regcred
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+# Service configuration
+service:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+
+  ports:
+    smtp: 25
+    smtps: 465
+    submission: 587
+    imap: 143
+    imaps: 993
+    pop3: 110
+    pop3s: 995
+    jmap: 8080
+    metrics: 9090
+
+  annotations:
+    # For AWS ELB
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+
+    # For GCP
+    # cloud.google.com/load-balancer-type: "Internal"
+
+    # For Azure
+    # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+
+  loadBalancerIP: ""
+
+# Ingress for JMAP/webmail access
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/limit-rps: "200"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: mail.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: rusmes-jmap-tls
+      hosts:
+        - mail.example.com
+
+# Resource allocation (adjust based on load)
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "1000m"
+  limits:
+    memory: "8Gi"
+    cpu: "4000m"
+
+# Horizontal Pod Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 5
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Node selector for scheduling
+nodeSelector: {}
+# Example:
+#   disk: ssd
+#   workload: mail
+
+# Tolerations for tainted nodes
+tolerations: []
+# Example:
+# - key: "mail-server"
+#   operator: "Equal"
+#   value: "true"
+#   effect: "NoSchedule"
+
+# Pod anti-affinity for HA
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - rusmes
+        topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - rusmes
+        topologyKey: topology.kubernetes.io/zone
+
+# Persistent storage for mail data
+persistence:
+  enabled: true
+  storageClass: "fast-ssd"  # Use your fastest storage class
+  size: 200Gi  # Adjust based on expected mail volume
+  accessMode: ReadWriteOnce
+
+# Backup storage (for local backups)
+backupPersistence:
+  enabled: true
+  storageClass: "standard"  # Can use slower, cheaper storage
+  size: 1Ti
+  accessMode: ReadWriteMany
+
+# RusMES application configuration
+config:
+  hostname: "mail.example.com"
+  maxMessageSize: 104857600  # 100 MB
+  maxRecipients: 100
+  maxConnections: 2000
+
+  smtp:
+    enabled: true
+    timeout: 300
+    rateLimitRps: 200
+
+  imap:
+    enabled: true
+    timeout: 1800
+
+  pop3:
+    enabled: true
+    timeout: 600
+
+  jmap:
+    enabled: true
+    maxUploadSize: 104857600
+    maxConcurrentRequests: 200
+
+  search:
+    enabled: true
+
+  metrics:
+    enabled: true
+
+  security:
+    enableDkim: true
+    enableSpf: true
+    enableDmarc: true
+    antispam:
+      enabled: true
+      spamThreshold: 5.0
+
+  logging:
+    level: "info"  # debug, info, warn, error
+    format: "json"  # json or text
+
+# TLS configuration
+tls:
+  enabled: true
+  existingSecret: ""  # Leave empty to use cert-manager
+  certManager:
+    enabled: true
+    issuer: "letsencrypt-prod"
+
+# PostgreSQL database configuration
+postgresql:
+  enabled: true
+  auth:
+    username: rusmes
+    password: "CHANGE_ME_STRONG_PASSWORD_HERE"  # Must be changed!
+    database: rusmes
+  primary:
+    persistence:
+      enabled: true
+      size: 500Gi
+      storageClass: "fast-ssd"
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "2000m"
+      limits:
+        memory: "16Gi"
+        cpu: "8000m"
+  # Enable replication for HA
+  architecture: replication
+  replication:
+    enabled: true
+    numSynchronousReplicas: 1
+  readReplicas:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 500Gi
+      storageClass: "fast-ssd"
+    resources:
+      requests:
+        memory: "4Gi"
+        cpu: "2000m"
+      limits:
+        memory: "16Gi"
+        cpu: "8000m"
+
+# External PostgreSQL (if postgresql.enabled=false)
+externalPostgresql:
+  host: "postgres-service.database.svc.cluster.local"
+  port: 5432
+  database: "rusmes"
+  username: "rusmes"
+  password: "changeme"
+
+# Monitoring with Prometheus
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Grafana dashboards
+grafana:
+  enabled: true
+  dashboards:
+    enabled: true
+
+# Network policies for security
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 3  # Always keep at least 3 pods running
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM UTC
+  retention: 30  # Keep 30 days
+  s3:
+    enabled: true
+    bucket: "my-company-rusmes-backups"
+    region: "us-west-2"
+    accessKeyId: "AKIAIOSFODNN7EXAMPLE"
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+# ACME/TLS auto-renewal
+acme:
+  enabled: true
+  email: "admin@example.com"
+  server: "https://acme-v02.api.letsencrypt.org/directory"
+  challengeType: "http01"  # or dns01 for wildcard certs
+
+# RBAC
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["secrets", "configmaps"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list"]

@@ -1,0 +1,165 @@
+Thank you for installing {{ .Chart.Name }}!
+
+RusMES - Enterprise Mail Server in Rust
+
+{{ if .Release.IsInstall -}}
+==> Installation Summary
+{{- else -}}
+==> Upgrade Summary
+{{- end }}
+
+Release Name: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Chart Version: {{ .Chart.Version }}
+App Version: {{ .Chart.AppVersion }}
+
+==> Deployment Information
+
+{{ if .Values.persistence.enabled -}}
+Persistence: Enabled ({{ .Values.persistence.size }})
+{{- else -}}
+WARNING: Persistence is disabled. Mail data will be lost on pod restart!
+{{- end }}
+
+{{ if .Values.autoscaling.enabled -}}
+Autoscaling: Enabled ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas)
+{{- else -}}
+Replicas: {{ .Values.replicaCount }}
+{{- end }}
+
+==> Services Status
+
+{{ if .Values.config.smtp.enabled -}}
+SMTP: Enabled
+  - Port 25 (SMTP)
+  - Port 465 (SMTPS)
+  - Port 587 (Submission)
+{{- end }}
+
+{{ if .Values.config.imap.enabled -}}
+IMAP: Enabled
+  - Port 143 (IMAP)
+  - Port 993 (IMAPS)
+{{- end }}
+
+{{ if .Values.config.pop3.enabled -}}
+POP3: Enabled
+  - Port 110 (POP3)
+  - Port 995 (POP3S)
+{{- end }}
+
+{{ if .Values.config.jmap.enabled -}}
+JMAP: Enabled
+  - Port 8080 (HTTP)
+{{- end }}
+
+{{ if .Values.config.metrics.enabled -}}
+Metrics: Enabled
+  - Port 9090 (Prometheus)
+{{- end }}
+
+==> Access Instructions
+
+1. Get the application URL:
+
+{{ if .Values.ingress.enabled -}}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "rusmes.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "rusmes.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "rusmes.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.ports.jmap }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "rusmes.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  echo "Visit http://127.0.0.1:8080 to use your application"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:$CONTAINER_PORT
+{{- end }}
+
+2. Monitor deployment status:
+
+  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "rusmes.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -w
+
+3. View logs:
+
+  kubectl logs --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "rusmes.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -f
+
+{{ if .Values.config.metrics.enabled -}}
+4. Access metrics:
+
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "rusmes.fullname" . }} 9090:9090
+  # Then visit http://localhost:9090/metrics
+{{- end }}
+
+==> Next Steps
+
+{{ if .Values.postgresql.enabled -}}
+1. Set up database schema:
+   kubectl exec -it --namespace {{ .Release.Namespace }} {{ include "rusmes.fullname" . }}-0 -- rusmes-cli migrate
+{{- end }}
+
+2. Create admin user:
+   kubectl exec -it --namespace {{ .Release.Namespace }} {{ include "rusmes.fullname" . }}-0 -- rusmes-cli user create admin@{{ .Values.config.hostname }} --admin
+
+3. Configure DNS records for your domain:
+   - MX record pointing to {{ .Values.config.hostname }}
+   {{ if .Values.config.security.enableDkim -}}
+   - DKIM TXT record (run: rusmes-cli dkim generate {{ .Values.config.hostname }})
+   {{- end }}
+   {{ if .Values.config.security.enableSpf -}}
+   - SPF TXT record (example: "v=spf1 mx ~all")
+   {{- end }}
+   {{ if .Values.config.security.enableDmarc -}}
+   - DMARC TXT record (example: "v=DMARC1; p=quarantine; rua=mailto:postmaster@{{ .Values.config.hostname }}")
+   {{- end }}
+
+{{ if .Values.tls.certManager.enabled -}}
+4. TLS certificates will be automatically provisioned via cert-manager
+{{- else }}
+4. Configure TLS certificates manually in the secret: {{ .Values.tls.existingSecret | default (printf "%s-tls" (include "rusmes.fullname" .)) }}
+{{- end }}
+
+{{ if .Values.backup.enabled -}}
+5. Verify backup configuration:
+   kubectl get cronjob --namespace {{ .Release.Namespace }} {{ include "rusmes.fullname" . }}-backup
+{{- end }}
+
+==> Security Warnings
+
+{{ if not .Values.tls.enabled -}}
+WARNING: TLS is disabled. Please enable TLS in production environments!
+{{- end }}
+
+{{ if .Values.postgresql.enabled -}}
+{{ if eq .Values.postgresql.auth.password "changeme" -}}
+WARNING: PostgreSQL password is set to default. Please change it immediately!
+{{- end }}
+{{- end }}
+
+{{ if not .Values.persistence.enabled -}}
+WARNING: Persistence is disabled. All mail data will be lost on pod restart!
+{{- end }}
+
+{{ if lt (.Values.replicaCount | int) 3 -}}
+WARNING: Running with less than 3 replicas. This is not recommended for production.
+{{- end }}
+
+==> Documentation
+
+For more information, visit:
+  - Chart README: https://github.com/example/rusmes/tree/main/helm/rusmes
+  - Project Documentation: https://github.com/example/rusmes
+
+To get the full configuration:
+  helm get values {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+To upgrade the release:
+  helm upgrade {{ .Release.Name }} {{ .Chart.Name }} --namespace {{ .Release.Namespace }}

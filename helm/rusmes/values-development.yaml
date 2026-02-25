@@ -1,0 +1,169 @@
+# RusMES Development Values
+# This file contains development-friendly configuration
+
+# Single replica for development
+replicaCount: 1
+
+image:
+  repository: rusmes/rusmes
+  pullPolicy: Always  # Always pull latest in dev
+  tag: "latest"
+
+serviceAccount:
+  create: true
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+# Use NodePort for easy local access
+service:
+  type: NodePort
+  sessionAffinity: None
+
+  ports:
+    smtp: 25
+    smtps: 465
+    submission: 587
+    imap: 143
+    imaps: 993
+    pop3: 110
+    pop3s: 995
+    jmap: 8080
+    metrics: 9090
+
+# No ingress in development
+ingress:
+  enabled: false
+
+# Minimal resources for development
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+# No autoscaling in development
+autoscaling:
+  enabled: false
+
+# Minimal storage
+persistence:
+  enabled: true
+  storageClass: "standard"
+  size: 5Gi
+  accessMode: ReadWriteOnce
+
+backupPersistence:
+  enabled: false
+
+# Development configuration
+config:
+  hostname: "localhost"
+  maxMessageSize: 10485760  # 10 MB
+  maxRecipients: 10
+  maxConnections: 100
+
+  smtp:
+    enabled: true
+    timeout: 300
+    rateLimitRps: 10
+
+  imap:
+    enabled: true
+    timeout: 1800
+
+  pop3:
+    enabled: true
+    timeout: 600
+
+  jmap:
+    enabled: true
+    maxUploadSize: 10485760
+    maxConcurrentRequests: 10
+
+  search:
+    enabled: true
+
+  metrics:
+    enabled: true
+
+  security:
+    enableDkim: false  # Disabled for dev
+    enableSpf: false
+    enableDmarc: false
+    antispam:
+      enabled: false
+
+  logging:
+    level: "debug"  # Verbose logging for development
+    format: "text"  # Human-readable logs
+
+# TLS disabled for development
+tls:
+  enabled: false
+  certManager:
+    enabled: false
+
+# PostgreSQL with minimal resources
+postgresql:
+  enabled: true
+  auth:
+    username: rusmes
+    password: "dev-password"
+    database: rusmes
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: "standard"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+  # No replication in dev
+  architecture: standalone
+
+# No monitoring in development
+prometheus:
+  enabled: false
+
+grafana:
+  enabled: false
+
+# No network policies in development
+networkPolicy:
+  enabled: false
+
+# No PDB in development
+podDisruptionBudget:
+  enabled: false
+
+# No backups in development
+backup:
+  enabled: false
+
+# No ACME in development
+acme:
+  enabled: false
+
+# RBAC enabled
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["secrets", "configmaps"]
+      verbs: ["get", "list", "watch"]
