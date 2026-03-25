@@ -1,6 +1,7 @@
 //! Throughput benchmark - Messages per second
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn parse_email(email: &str) -> usize {

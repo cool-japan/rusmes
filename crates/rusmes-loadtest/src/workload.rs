@@ -97,10 +97,9 @@ impl WorkloadPattern {
 
     /// Calculate delay between requests for the given rate
     pub fn delay_for_rate(rate: u64) -> Duration {
-        if rate == 0 {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_micros(1_000_000 / rate)
+        match 1_000_000u64.checked_div(rate) {
+            Some(micros) => Duration::from_micros(micros),
+            None => Duration::from_secs(1),
         }
     }
 }

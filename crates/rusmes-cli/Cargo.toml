@@ -17,10 +17,10 @@ name = "rusmes"
 path = "src/main.rs"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
-rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
-rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
-rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.1" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.1" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.1" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -38,9 +38,9 @@ bcrypt = { workspace = true }
 tabled = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-tar = { workspace = true }
-zstd = { workspace = true }
-flate2 = { workspace = true }
+oxiarc-archive = { workspace = true }
+oxiarc-zstd = { workspace = true }
+oxiarc-deflate = { workspace = true }
 aes-gcm = { workspace = true }
 argon2 = { workspace = true }
 aws-sdk-s3 = { workspace = true }

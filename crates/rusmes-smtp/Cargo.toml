@@ -13,10 +13,10 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
-rusmes-core = { path = "../rusmes-core", version = "0.1.0" }
-rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
-rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-core = { path = "../rusmes-core", version = "0.1.1" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.1" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.1" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 nom = { workspace = true }
@@ -36,4 +36,4 @@ hex = { workspace = true }
 getrandom = { workspace = true }
 
 [dev-dependencies]
-rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.0" }
+rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.1" }

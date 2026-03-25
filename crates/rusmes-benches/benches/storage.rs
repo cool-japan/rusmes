@@ -2,8 +2,9 @@
 //!
 //! Benchmarks for message append, retrieval, and other storage operations
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::time::Duration;
 
 /// Simple in-memory storage backend for benchmarking

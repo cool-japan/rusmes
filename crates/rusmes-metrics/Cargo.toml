@@ -13,8 +13,8 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
-rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.1" }
 prometheus = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

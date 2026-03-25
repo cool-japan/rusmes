@@ -25,16 +25,16 @@ name = "user_manager"
 path = "src/bin/user_manager.rs"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.0" }
-rusmes-core = { path = "../rusmes-core", version = "0.1.0" }
-rusmes-storage = { path = "../rusmes-storage", version = "0.1.0" }
-rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.0" }
-rusmes-imap = { path = "../rusmes-imap", version = "0.1.0" }
-rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.0" }
-rusmes-pop3 = { path = "../rusmes-pop3", version = "0.1.0" }
-rusmes-config = { path = "../rusmes-config", version = "0.1.0" }
-rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.0" }
-rusmes-auth = { path = "../rusmes-auth", version = "0.1.0" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-core = { path = "../rusmes-core", version = "0.1.1" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.1" }
+rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.1" }
+rusmes-imap = { path = "../rusmes-imap", version = "0.1.1" }
+rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.1" }
+rusmes-pop3 = { path = "../rusmes-pop3", version = "0.1.1" }
+rusmes-config = { path = "../rusmes-config", version = "0.1.1" }
+rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.1" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.1" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

@@ -1,7 +1,7 @@
 //! Message generators for load testing
 
 use crate::config::MessageContent;
-use rand::Rng;
+use rand::RngExt;
 
 /// Message generator
 #[derive(Clone)]

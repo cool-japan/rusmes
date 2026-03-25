@@ -13,8 +13,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
-use std::io::Write;
 use std::path::Path;
 use tabled::Tabled;
 
@@ -323,7 +321,7 @@ pub fn create_local_backup(
 fn create_tar_archive(source_dir: &Path, pb: &ProgressBar) -> Result<Vec<u8>> {
     let mut tar_data = Vec::new();
     {
-        let mut tar = tar::Builder::new(&mut tar_data);
+        let mut tar_writer = oxiarc_archive::TarWriter::new(&mut tar_data);
 
         // Add all files from source directory
         let walker = walkdir::WalkDir::new(source_dir)
@@ -335,12 +333,19 @@ fn create_tar_archive(source_dir: &Path, pb: &ProgressBar) -> Result<Vec<u8>> {
             let path = entry.path();
             if path.is_file() {
                 let rel_path = path.strip_prefix(source_dir)?;
-                tar.append_path_with_name(path, rel_path)?;
+                let rel_str = rel_path.to_str().context("Non-UTF8 path")?;
+                let file_data =
+                    fs::read(path).with_context(|| format!("Failed to read file {:?}", path))?;
+                tar_writer
+                    .add_file(rel_str, &file_data)
+                    .map_err(|e| anyhow::anyhow!("Failed to add file to tar: {}", e))?;
                 pb.inc(1);
             }
         }
 
-        tar.finish()?;
+        tar_writer
+            .finish()
+            .map_err(|e| anyhow::anyhow!("Failed to finish tar: {}", e))?;
     }
 
     Ok(tar_data)
@@ -350,15 +355,12 @@ fn compress_data(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
     match compression {
         CompressionType::None => Ok(data.to_vec()),
         CompressionType::Gzip => {
-            use flate2::write::GzEncoder;
-            use flate2::Compression;
-
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
-            encoder.write_all(data)?;
-            Ok(encoder.finish()?)
+            let compressed = oxiarc_deflate::gzip_compress(data, 9)
+                .map_err(|e| anyhow::anyhow!("Failed to gzip compress: {}", e))?;
+            Ok(compressed)
         }
         CompressionType::Zstd => {
-            let compressed = zstd::encode_all(data, 3)?;
+            let compressed = oxiarc_zstd::encode_all(data, 3)?;
             Ok(compressed)
         }
     }
@@ -368,15 +370,12 @@ pub fn decompress_data(data: &[u8], compression: CompressionType) -> Result<Vec<
     match compression {
         CompressionType::None => Ok(data.to_vec()),
         CompressionType::Gzip => {
-            use flate2::read::GzDecoder;
-
-            let mut decoder = GzDecoder::new(data);
-            let mut decompressed = Vec::new();
-            decoder.read_to_end(&mut decompressed)?;
+            let decompressed = oxiarc_deflate::gzip_decompress(data)
+                .map_err(|e| anyhow::anyhow!("Failed to gzip decompress: {}", e))?;
             Ok(decompressed)
         }
         CompressionType::Zstd => {
-            let decompressed = zstd::decode_all(data)?;
+            let decompressed = oxiarc_zstd::decode_all(data)?;
             Ok(decompressed)
         }
     }

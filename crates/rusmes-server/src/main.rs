@@ -81,12 +81,12 @@ fn check_non_reloadable_changes(old_config: &ServerConfig, new_config: &ServerCo
 
     // Check IMAP changes
     match (&old_config.imap, &new_config.imap) {
-        (Some(old_imap), Some(new_imap)) => {
-            if old_imap.host != new_imap.host || old_imap.port != new_imap.port {
-                tracing::warn!(
-                    "IMAP bind address/port changed. Restart required for this change to take effect."
-                );
-            }
+        (Some(old_imap), Some(new_imap))
+            if old_imap.host != new_imap.host || old_imap.port != new_imap.port =>
+        {
+            tracing::warn!(
+                "IMAP bind address/port changed. Restart required for this change to take effect."
+            );
         }
         (None, Some(_)) => {
             tracing::warn!("IMAP server enabled. Restart required for this change to take effect.");
@@ -101,12 +101,12 @@ fn check_non_reloadable_changes(old_config: &ServerConfig, new_config: &ServerCo
 
     // Check JMAP changes
     match (&old_config.jmap, &new_config.jmap) {
-        (Some(old_jmap), Some(new_jmap)) => {
-            if old_jmap.host != new_jmap.host || old_jmap.port != new_jmap.port {
-                tracing::warn!(
-                    "JMAP bind address/port changed. Restart required for this change to take effect."
-                );
-            }
+        (Some(old_jmap), Some(new_jmap))
+            if old_jmap.host != new_jmap.host || old_jmap.port != new_jmap.port =>
+        {
+            tracing::warn!(
+                "JMAP bind address/port changed. Restart required for this change to take effect."
+            );
         }
         (None, Some(_)) => {
             tracing::warn!("JMAP server enabled. Restart required for this change to take effect.");
@@ -121,12 +121,12 @@ fn check_non_reloadable_changes(old_config: &ServerConfig, new_config: &ServerCo
 
     // Check POP3 changes
     match (&old_config.pop3, &new_config.pop3) {
-        (Some(old_pop3), Some(new_pop3)) => {
-            if old_pop3.host != new_pop3.host || old_pop3.port != new_pop3.port {
-                tracing::warn!(
-                    "POP3 bind address/port changed. Restart required for this change to take effect."
-                );
-            }
+        (Some(old_pop3), Some(new_pop3))
+            if old_pop3.host != new_pop3.host || old_pop3.port != new_pop3.port =>
+        {
+            tracing::warn!(
+                "POP3 bind address/port changed. Restart required for this change to take effect."
+            );
         }
         (None, Some(_)) => {
             tracing::warn!("POP3 server enabled. Restart required for this change to take effect.");

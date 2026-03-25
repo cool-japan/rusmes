@@ -105,5 +105,5 @@ pub trait Matcher: Send + Sync {
 ## Tests
 
 ```bash
-cargo test -p rusmes-core   # 9 tests
+cargo test -p rusmes-core   # 20 tests
 ```

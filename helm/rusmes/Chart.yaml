@@ -43,4 +43,4 @@ dependencies:
 
 annotations:
   category: Infrastructure
-  licenses: Apache-2.0 OR MIT
+  licenses: Apache-2.0

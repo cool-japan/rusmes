@@ -2,8 +2,9 @@
 //!
 //! Target: <50ms p95 search query latency
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::time::Duration;
 
 /// Simple inverted index for benchmarking

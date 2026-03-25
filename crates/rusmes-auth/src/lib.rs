@@ -17,7 +17,7 @@
 //! | LDAP / Active Directory | [`backends::ldap`] | connection pooling, group filtering |
 //! | SQL (SQLite / Postgres / MySQL) | [`backends::sql`] | bcrypt + Argon2 + SCRAM-SHA-256 |
 //! | OAuth2 / OIDC | [`backends::oauth2`] | JWT validation, XOAUTH2 SASL |
-//! | PAM | [`backends::pam`] | **feature-gated** (`pam-auth`), C bindings |
+//! | System (Unix) | [`backends::system`] | Pure Rust `/etc/shadow` auth |
 //!
 //! ## SASL Mechanisms
 //!
@@ -37,12 +37,6 @@
 //! - Per-IP rate limiting
 //! - Password strength validation (entropy, character class, banned list)
 //! - In-memory audit logging
-//!
-//! ## Feature Flags
-//!
-//! | Feature | Default | Description |
-//! |---------|---------|-------------|
-//! | `pam-auth` | **no** | Enables PAM backend (requires C `libpam`). Disabled by default to satisfy the Pure Rust policy and avoid RUSTSEC-2023-0040/0059. |
 //!
 //! ## Example
 //!

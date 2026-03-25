@@ -10,6 +10,9 @@
 .vscode/
 .idea/
 
+# Claude AI config
+**/.claude/
+
 # macOS
 .DS_Store
 
@@ -23,3 +26,6 @@ test_security_api
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Rustc ICE dumps
+rustc-ice-*.txt

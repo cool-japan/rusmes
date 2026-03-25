@@ -10,7 +10,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::Level;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -353,25 +352,16 @@ fn archive_old_logs(config: &LogConfig) {
 
 /// Compress a log file using gzip
 fn compress_log_file(path: &Path) -> Result<()> {
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-
     let input =
         fs::read(path).with_context(|| format!("Failed to read log file: {}", path.display()))?;
 
     let output_path = path.with_extension("log.gz");
-    let output_file = fs::File::create(&output_path).with_context(|| {
-        format!(
-            "Failed to create compressed file: {}",
-            output_path.display()
-        )
-    })?;
 
-    let mut encoder = GzEncoder::new(output_file, Compression::default());
-    encoder
-        .write_all(&input)
-        .with_context(|| format!("Failed to compress log file: {}", path.display()))?;
-    encoder.finish()?;
+    let compressed = oxiarc_deflate::gzip_compress(&input, 6)
+        .map_err(|e| anyhow::anyhow!("Failed to compress log file {}: {}", path.display(), e))?;
+
+    fs::write(&output_path, &compressed)
+        .with_context(|| format!("Failed to write compressed file: {}", output_path.display()))?;
 
     // Remove original file after successful compression
     fs::remove_file(path)

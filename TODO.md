@@ -9,12 +9,12 @@
 
 ## Project Status
 
-**Last Updated**: 2026-02-25
-**Total Lines of Code**: ~87,000
+**Last Updated**: 2026-03-25
+**Total Lines of Code**: ~87,579 Rust lines (71,926 code lines)
 **Crates**: 17 (including rusmes-acme, rusmes-loadtest)
-**Test Coverage**: 1,918+ unit tests passing (100%), integration tests require live server
+**Test Coverage**: 1,942 unit tests passing (100%), integration tests require live server
 **Build Status**: ✅ Clean (ZERO warnings from our code)
-**Release**: v0.1.0 (2026-02-25) 🎉
+**Release**: v0.1.1 (2026-03-25) 🎉
 
 ---
 
@@ -155,9 +155,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Lines of Code | ~87,000 |
+| Total Lines of Code | ~87,579 Rust lines (71,926 code lines) |
 | Crates | 17 |
-| Unit Tests | 1,918+ (100% passing) |
+| Unit Tests | 1,942 (100% passing) |
 | Warnings | 0 |
 | Protocols | SMTP, IMAP, POP3, JMAP |
 | Auth Backends | 5 (File, LDAP, SQL, OAuth2, PAM) |

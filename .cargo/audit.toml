@@ -6,4 +6,5 @@ ignore = [
     "RUSTSEC-2025-0040",  # users crate root group - transitive via optional pam feature; disabled by default
     "RUSTSEC-2025-0017",  # trust-dns-proto unmaintained - migrated to hickory-resolver
     "RUSTSEC-2026-0002",  # lru unsound - transitive via tantivy/ratatui/aws-sdk-s3; awaiting upstream fix
+    "RUSTSEC-2026-0049",  # rustls-webpki 0.101.7 CRL matching bug - transitive via aws-smithy-http-client → rustls 0.21 → rustls-webpki 0.101.7; aws-smithy-http-client 1.1.12 is latest and still uses rustls 0.21; awaiting upstream AWS SDK migration to rustls 0.22+
 ]

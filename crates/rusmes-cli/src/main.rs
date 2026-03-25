@@ -311,7 +311,7 @@ enum BackupAction {
         #[arg(short, long)]
         output: String,
         /// Backup format
-        #[arg(long, value_enum, default_value = "targz")]
+        #[arg(long, value_enum, default_value = "tar-gz")]
         format: BackupFormat,
         /// Compression type
         #[arg(long, value_enum, default_value = "gzip")]
@@ -330,7 +330,7 @@ enum BackupAction {
         #[arg(long)]
         base: String,
         /// Backup format
-        #[arg(long, value_enum, default_value = "targz")]
+        #[arg(long, value_enum, default_value = "tar-gz")]
         format: BackupFormat,
         /// Compression type
         #[arg(long, value_enum, default_value = "gzip")]

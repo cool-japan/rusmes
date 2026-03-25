@@ -75,5 +75,5 @@ integration is pending.
 ## Tests
 
 ```bash
-cargo test -p rusmes-storage   # 1 test
+cargo test -p rusmes-storage   # 166 tests
 ```

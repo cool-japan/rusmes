@@ -60,5 +60,5 @@ pub enum JmapMethod {
 ## Tests
 
 ```bash
-cargo test -p rusmes-jmap   # 1 test
+cargo test -p rusmes-jmap   # 269 tests
 ```

@@ -39,15 +39,17 @@ rusmes/
 │   ├── rusmes-smtp/       # SMTP server (RFC 5321, STARTTLS, AUTH)
 │   ├── rusmes-imap/       # IMAP server foundation (RFC 9051)
 │   ├── rusmes-jmap/       # JMAP server foundation (RFC 8620/8621)
-│   ├── rusmes-pop3/       # POP3 protocol (placeholder)
-│   ├── rusmes-auth/       # Authentication backends (trait defined)
-│   ├── rusmes-search/     # Full-text search (Tantivy, placeholder)
-│   ├── rusmes-config/     # Configuration management (TOML)
-│   ├── rusmes-metrics/    # Prometheus metrics (18 metrics)
-│   ├── rusmes-cli/        # CLI tool (user, mailbox, queue management)
+│   ├── rusmes-pop3/       # POP3 server (RFC 1939, STARTTLS, APOP)
+│   ├── rusmes-auth/       # Authentication backends (File, LDAP, SQL, OAuth2, PAM)
+│   ├── rusmes-search/     # Full-text search (Tantivy)
+│   ├── rusmes-config/     # Configuration management (TOML/YAML, hot-reload)
+│   ├── rusmes-metrics/    # Prometheus metrics + OpenTelemetry tracing
+│   ├── rusmes-cli/        # CLI tool (user, mailbox, queue, backup/restore)
 │   ├── rusmes-server/     # Main server binary
 │   ├── rusmes-acme/       # TLS/ACME certificate management
-│   └── rusmes-loadtest/   # Load testing utilities
+│   ├── rusmes-loadtest/   # Load testing utilities
+│   ├── rusmes-benches/    # Performance benchmarks (criterion)
+│   └── rusmes-tests/      # Integration test suite
 ├── examples/              # Configuration examples (minimal, full, production)
 ├── Dockerfile             # Multi-stage Docker build
 ├── docker-compose.yml     # Full deployment stack
@@ -167,7 +169,7 @@ cargo test -p rusmes-core
 ## Test Coverage
 
 ```
-Total: 1,918 tests passing (49 skipped)
+Total: 1,942 tests passing (49 skipped)
 Zero warnings, zero errors
 ```
 
@@ -185,7 +187,7 @@ RusMES uses a **mailet-based processing pipeline**:
 
 ## 🚧 Development Status
 
-**v0.1.0 Released: 2026-02-25** 🎉
+**v0.1.1 Released: 2026-03-25** 🎉
 
 **Phase 1-2: Core Foundation** ✅ Complete
 - Mail types, storage traits, mailet engine
@@ -239,3 +241,19 @@ Contributions welcome! This is a reference implementation of modern mail server 
 
 **Memory Usage Target:** 10-50MB (vs 500MB-2GB for Java-based servers)
 **Performance Target:** >50,000 messages/sec throughput
+
+## Sponsorship
+
+RusMes is developed and maintained by **COOLJAPAN OU (Team Kitasan)**.
+
+If you find RusMes useful, please consider sponsoring the project to support continued development of the Pure Rust ecosystem.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=github)](https://github.com/sponsors/cool-japan)
+
+**[https://github.com/sponsors/cool-japan](https://github.com/sponsors/cool-japan)**
+
+Your sponsorship helps us:
+- Maintain and improve the COOLJAPAN ecosystem
+- Keep the entire ecosystem (OxiBLAS, OxiFFT, SciRS2, etc.) 100% Pure Rust
+- Provide long-term support and security updates
+

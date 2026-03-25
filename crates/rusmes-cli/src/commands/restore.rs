@@ -8,6 +8,9 @@
 //! - S3/Object storage download
 //! - Verification and dry-run mode
 
+use super::backup::CompressionType;
+use crate::client::Client;
+use crate::commands::backup;
 use anyhow::{Context, Result};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -16,11 +19,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use tabled::Tabled;
-use tar::Archive;
-
-use super::backup::CompressionType;
-use crate::client::Client;
-use crate::commands::backup;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RestoreOptions {
@@ -316,7 +314,9 @@ pub fn restore_local(
 
     // Extract tar archive
     pb.set_message("Extracting files...");
-    let mut archive = Archive::new(&decompressed_data[..]);
+    let cursor = std::io::Cursor::new(decompressed_data);
+    let mut tar_reader = oxiarc_archive::TarReader::new(cursor)
+        .map_err(|e| anyhow::anyhow!("Failed to read tar archive: {}", e))?;
 
     let mut stats = RestoreStats {
         files_restored: 0,
@@ -327,28 +327,34 @@ pub fn restore_local(
         skipped: 0,
     };
 
-    for entry in archive.entries()? {
-        let mut entry: tar::Entry<&[u8]> = entry?;
-        let path = entry.path()?;
+    let entries = tar_reader.entries().to_vec();
+    for entry in &entries {
+        let path = Path::new(&entry.name);
 
         // Apply filters
-        let should_restore = should_restore_file(&path, filter_users, filter_mailboxes);
+        let should_restore = should_restore_file(path, filter_users, filter_mailboxes);
 
         if !should_restore {
             stats.skipped += 1;
             continue;
         }
 
-        if !dry_run {
-            let target_path = target_dir.join(&*path);
+        if !dry_run && entry.is_file() {
+            let target_path = target_dir.join(path);
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            entry.unpack(&target_path)?;
+            let data = tar_reader
+                .extract_to_vec(entry)
+                .map_err(|e| anyhow::anyhow!("Failed to extract entry: {}", e))?;
+            fs::write(&target_path, &data)?;
+        } else if !dry_run && entry.is_dir() {
+            let target_path = target_dir.join(path);
+            fs::create_dir_all(&target_path)?;
         }
 
         stats.files_restored += 1;
-        stats.bytes_restored += entry.size();
+        stats.bytes_restored += entry.size;
         pb.inc(1);
     }
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-03-25
+
+### Fixed
+- Updated rand API usage: `rand::Rng` → `rand::RngExt` for rand 0.10 compatibility (rusmes-loadtest)
+- Fixed clippy `sort_by` → `sort_by_key` with `Reverse` in rusmes-jmap
+- Fixed deprecated `criterion::black_box` → `std::hint::black_box` in rusmes-benches
+- Fixed clippy `collapsible_match` in rusmes-server
+- Fixed clippy `manual_checked_ops` in rusmes-loadtest
+- Upgraded oxiarc-deflate, oxiarc-zstd, oxiarc-archive from 0.2.5 to 0.2.6
+
 ## [0.1.0] - 2026-02-25
 
 ### Added
