@@ -38,7 +38,9 @@ struct SpamResult {
 }
 
 /// Convert MIME message to bytes for spamd
-fn message_to_bytes(mail: &Mail) -> Result<Vec<u8>> {
+///
+/// For `MessageBody::Large`, the body is read into memory before serialisation.
+async fn message_to_bytes(mail: &Mail) -> Result<Vec<u8>> {
     let message = mail.message();
     let headers = message.headers();
     let body = message.body();
@@ -63,10 +65,12 @@ fn message_to_bytes(mail: &Mail) -> Result<Vec<u8>> {
         rusmes_proto::MessageBody::Small(bytes) => {
             result.extend_from_slice(bytes);
         }
-        rusmes_proto::MessageBody::Large(_) => {
-            return Err(anyhow!(
-                "Large message streams not supported for spam checking"
-            ));
+        rusmes_proto::MessageBody::Large(large) => {
+            let bytes = large
+                .read_to_bytes()
+                .await
+                .map_err(|e| anyhow!("Failed to read large message body for spam check: {e}"))?;
+            result.extend_from_slice(&bytes);
         }
     }
 
@@ -227,7 +231,7 @@ impl Mailet for SpamAssassinMailet {
         tracing::debug!("Scanning mail {} for spam", mail.id());
 
         // Extract message content
-        let message_bytes = match message_to_bytes(mail) {
+        let message_bytes = match message_to_bytes(mail).await {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::error!("Failed to serialize message {}: {}", mail.id(), e);
@@ -382,10 +386,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_message_to_bytes_no_headers() {
+    #[tokio::test]
+    async fn test_message_to_bytes_no_headers() {
         let mail = create_test_mail("sender@example.com", vec!["recipient@test.com"]);
-        let result = message_to_bytes(&mail);
+        let result = message_to_bytes(&mail).await;
         assert!(result.is_ok());
 
         let bytes = result.unwrap();

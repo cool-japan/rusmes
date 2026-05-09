@@ -3,7 +3,7 @@
 use crate::mailet::{Mailet, MailetConfig};
 use crate::mailets::{
     AddHeaderMailet, DkimVerifyMailet, DmarcVerifyMailet, LocalDeliveryMailet,
-    RemoteDeliveryMailet, RemoveMimeHeaderMailet, SpamAssassinMailet, SpfCheckMailet,
+    RemoteDeliveryMailet, RemoveMimeHeaderMailet, SieveMailet, SpamAssassinMailet, SpfCheckMailet,
     VirusScanMailet,
 };
 use crate::matcher::Matcher;
@@ -74,6 +74,13 @@ pub async fn create_mailet_with_storage(
         }
         "DmarcVerify" => {
             let mut mailet = DmarcVerifyMailet::new();
+            mailet.init(config).await?;
+            Ok(Arc::new(mailet))
+        }
+        // Accept both the canonical short name ("Sieve") and the legacy
+        // "<Name>Mailet" form for ergonomics (issue #1).
+        "Sieve" | "SieveMailet" => {
+            let mut mailet = SieveMailet::new();
             mailet.init(config).await?;
             Ok(Arc::new(mailet))
         }
@@ -150,5 +157,48 @@ mod tests {
         let matcher = create_matcher("All", vec![]);
         assert!(matcher.is_ok());
         assert_eq!(matcher.unwrap().name(), "All");
+    }
+
+    /// Regression test for https://github.com/cool-japan/rusmes/issues/1
+    ///
+    /// `mailet: Sieve` (and the legacy `mailet: SieveMailet`) used in a
+    /// transport pipeline must resolve through the factory. Before the fix,
+    /// the user's exact config below produced
+    /// `Err("Unknown mailet: Sieve")` because `factory::create_mailet*` had
+    /// no match arm for the Sieve mailet, even though `SieveMailet` was
+    /// implemented and re-exported from `crates/rusmes-core/src/mailets/mod.rs`.
+    #[tokio::test]
+    async fn test_issue_1_sieve_mailet_recognized() {
+        // Reproduce the user's mailet config from issue #1:
+        //   matcher: All
+        //   mailet: Sieve
+        //   params:
+        //     name: sieve
+        //     global_script: sieve            (a valid Sieve script body)
+        //     script_dir: /root/rusmes
+        let config = MailetConfig::new("Sieve")
+            .with_param("name", "sieve")
+            .with_param("global_script", "keep;")
+            .with_param("script_dir", "/root/rusmes");
+
+        let mailet = create_mailet("Sieve", config.clone()).await;
+        assert!(
+            mailet.is_ok(),
+            "expected `Sieve` mailet to resolve, got: {:?}",
+            mailet.err()
+        );
+        assert_eq!(mailet.expect("Sieve mailet should resolve").name(), "Sieve");
+
+        // The user also tried `mailet: SieveMailet`; accept that alias too.
+        let alias = create_mailet("SieveMailet", config).await;
+        assert!(
+            alias.is_ok(),
+            "expected `SieveMailet` alias to resolve, got: {:?}",
+            alias.err()
+        );
+        assert_eq!(
+            alias.expect("SieveMailet alias should resolve").name(),
+            "Sieve"
+        );
     }
 }

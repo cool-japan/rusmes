@@ -4,7 +4,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 /// Unique identifier for a message
@@ -40,6 +39,129 @@ impl std::fmt::Display for MessageId {
     }
 }
 
+/// A streaming body for messages too large to hold in memory.
+///
+/// Backed by a pinned async reader behind a Mutex so the body can be
+/// cheaply cloned (Arc) while remaining safely pollable by one consumer
+/// at a time.
+///
+/// # One-shot semantics
+///
+/// `read_to_bytes` reads from the current stream position to EOF.
+/// Calling it a second time will return an empty buffer (the reader is at EOF).
+/// If you need to re-read the body, construct a new `LargeBody` via
+/// [`LargeBody::from_path`].
+#[derive(Clone)]
+pub struct LargeBody {
+    reader: Arc<tokio::sync::Mutex<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>>>,
+    /// Pre-known byte count (e.g. file size). Callers should not read past this.
+    size: u64,
+    /// Optional SHA-256 digest of the full body content.
+    digest: Option<[u8; 32]>,
+}
+
+impl std::fmt::Debug for LargeBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LargeBody")
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
+impl LargeBody {
+    /// Wrap an async reader of known size.
+    pub fn from_reader<R: tokio::io::AsyncRead + Send + Sync + 'static>(
+        reader: R,
+        size: u64,
+    ) -> Self {
+        Self {
+            reader: Arc::new(tokio::sync::Mutex::new(Box::pin(reader))),
+            size,
+            digest: None,
+        }
+    }
+
+    /// Open a file as a streaming body.
+    pub async fn from_path(path: &std::path::Path) -> crate::error::Result<Self> {
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| crate::error::MailError::Parse(format!("cannot open large body: {e}")))?;
+        let size = file
+            .metadata()
+            .await
+            .map_err(|e| crate::error::MailError::Parse(format!("cannot stat large body: {e}")))?
+            .len();
+        Ok(Self::from_reader(file, size))
+    }
+
+    /// Pre-known byte count.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// SHA-256 digest if available.
+    pub fn digest(&self) -> Option<&[u8; 32]> {
+        self.digest.as_ref()
+    }
+
+    /// Set the digest (used by callers that computed it during streaming).
+    pub fn set_digest(&mut self, digest: [u8; 32]) {
+        self.digest = Some(digest);
+    }
+
+    /// Read the entire body into memory.
+    ///
+    /// For large messages this is expensive — prefer streaming consumers.
+    ///
+    /// # One-shot semantics
+    ///
+    /// This reads from the current stream position to EOF. A second call will
+    /// return an empty buffer. Construct a new `LargeBody` to re-read.
+    pub async fn read_to_bytes(&self) -> crate::error::Result<Bytes> {
+        use tokio::io::AsyncReadExt;
+        let mut guard = self.reader.lock().await;
+        let mut buf = Vec::new();
+        guard
+            .as_mut()
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| crate::error::MailError::Parse(format!("read error: {e}")))?;
+        Ok(Bytes::from(buf))
+    }
+}
+
+/// Message body - optimized for small and large messages
+#[derive(Clone, Debug)]
+pub enum MessageBody {
+    /// Small message stored in memory (<1MB)
+    Small(Bytes),
+    /// Large message backed by a streaming async reader.
+    Large(LargeBody),
+}
+
+impl MessageBody {
+    /// Choose `Small` or `Large` based on file size vs `threshold_bytes`.
+    ///
+    /// If the file fits within `threshold_bytes`, it is read into memory as `Small`.
+    /// Otherwise it is opened as a streaming `Large` body.
+    pub async fn from_path_with_threshold(
+        path: &std::path::Path,
+        threshold_bytes: u64,
+    ) -> crate::error::Result<Self> {
+        let meta = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| crate::error::MailError::Parse(format!("stat failed: {e}")))?;
+        if meta.len() <= threshold_bytes {
+            let data = tokio::fs::read(path)
+                .await
+                .map_err(|e| crate::error::MailError::Parse(format!("read failed: {e}")))?;
+            Ok(MessageBody::Small(Bytes::from(data)))
+        } else {
+            Ok(MessageBody::Large(LargeBody::from_path(path).await?))
+        }
+    }
+}
+
 /// MIME message structure
 #[derive(Debug, Clone)]
 pub struct MimeMessage {
@@ -68,24 +190,73 @@ impl MimeMessage {
         &self.body
     }
 
-    /// Extract text content from message (simplified for now)
-    pub fn extract_text(&self) -> crate::error::Result<String> {
+    /// Extract text content from message body.
+    ///
+    /// For `Small` bodies this is infallible in the sense that any non-UTF-8
+    /// bytes would have caused an earlier parse failure; for `Large` bodies the
+    /// reader is consumed once (see [`LargeBody`] one-shot semantics).
+    pub async fn extract_text(&self) -> crate::error::Result<String> {
         match &self.body {
             MessageBody::Small(bytes) => String::from_utf8(bytes.to_vec())
                 .map_err(|e| crate::error::MailError::Parse(e.to_string())),
-            MessageBody::Large(_) => {
-                // For large messages, we'd need to stream and decode
-                Ok(String::new())
+            MessageBody::Large(large) => {
+                let data = large.read_to_bytes().await?;
+                Ok(String::from_utf8_lossy(&data).into_owned())
             }
         }
     }
 
-    /// Get message size in bytes
-    pub fn size(&self) -> usize {
+    /// Get message body size in bytes (body only, no headers).
+    ///
+    /// Use [`Self::size_with_headers`] when SIZE/quota semantics require the
+    /// full on-wire byte count including the serialized header block.
+    pub fn body_size(&self) -> usize {
         match &self.body {
             MessageBody::Small(bytes) => bytes.len(),
-            MessageBody::Large(_) => 0, // Would need to track separately
+            MessageBody::Large(large) => large.size() as usize,
         }
+    }
+
+    /// Get total message size in bytes (full on-wire form).
+    ///
+    /// Counts the serialized header block (every header line written as
+    /// `Name: Value\r\n`, then a final `\r\n` blank line separating headers
+    /// from the body) plus the body byte length.
+    ///
+    /// This is the value that should be reported for SMTP `SIZE` (RFC 1870),
+    /// IMAP `RFC822.SIZE` (RFC 9051), and quota accounting — all of which
+    /// describe the message as it appears on the wire, not just its body.
+    ///
+    /// Note: header values stored in [`HeaderMap`] have already been
+    /// unfolded; this calculation reports them in their re-folded canonical
+    /// CRLF-terminated single-line form. Callers that re-fold long header
+    /// values for transmission may emit slightly more bytes; this helper
+    /// gives the canonical lower-bound per-RFC count.
+    pub fn size_with_headers(&self) -> usize {
+        let mut total = 0usize;
+        for (name, values) in self.headers.iter() {
+            for value in values {
+                // "Name: Value\r\n"
+                total = total
+                    .saturating_add(name.len())
+                    .saturating_add(2) // ": "
+                    .saturating_add(value.len())
+                    .saturating_add(2); // "\r\n"
+            }
+        }
+        // Final blank line separator between headers and body.
+        total = total.saturating_add(2); // "\r\n"
+        total.saturating_add(self.body_size())
+    }
+
+    /// Get message size in bytes.
+    ///
+    /// Equivalent to [`Self::size_with_headers`] — preserved for backwards
+    /// compatibility with existing callers (storage backends, IMAP
+    /// `RFC822.SIZE`, JMAP `Email/get`, quota accounting). For body-only
+    /// counts use [`Self::body_size`] explicitly.
+    pub fn size(&self) -> usize {
+        self.size_with_headers()
     }
 
     /// Parse MIME message from raw bytes
@@ -128,8 +299,11 @@ impl MimeMessage {
         }
     }
 
-    /// Parse multipart message into parts
-    pub fn parse_multipart(&self) -> crate::error::Result<Vec<crate::mime::MimePart>> {
+    /// Parse multipart message into parts.
+    ///
+    /// For `Large` bodies, the body is read into memory first (acceptable
+    /// since multipart messages are rarely single-attachment multi-MB bodies).
+    pub async fn parse_multipart(&self) -> crate::error::Result<Vec<crate::mime::MimePart>> {
         let content_type = self
             .content_type()?
             .ok_or_else(|| crate::error::MailError::Parse("No Content-Type header".to_string()))?;
@@ -144,47 +318,30 @@ impl MimeMessage {
             crate::error::MailError::Parse("No boundary in multipart".to_string())
         })?;
 
-        match &self.body {
-            MessageBody::Small(bytes) => crate::mime::split_multipart(bytes, boundary),
-            MessageBody::Large(_) => Err(crate::error::MailError::Parse(
-                "Cannot parse multipart from large message stream".to_string(),
-            )),
-        }
+        let bytes = match &self.body {
+            MessageBody::Small(bytes) => bytes.clone(),
+            MessageBody::Large(large) => large.read_to_bytes().await?,
+        };
+        crate::mime::split_multipart(&bytes, boundary)
     }
 
-    /// Decode message body according to Content-Transfer-Encoding
-    pub fn decode_body(&self) -> crate::error::Result<Vec<u8>> {
+    /// Decode message body according to Content-Transfer-Encoding.
+    ///
+    /// For `Large` bodies, the body is read into memory before decoding.
+    pub async fn decode_body(&self) -> crate::error::Result<Vec<u8>> {
         let encoding = self.content_transfer_encoding();
 
-        match &self.body {
-            MessageBody::Small(bytes) => match encoding {
-                crate::mime::ContentTransferEncoding::Base64 => crate::mime::decode_base64(bytes),
-                crate::mime::ContentTransferEncoding::QuotedPrintable => {
-                    crate::mime::decode_quoted_printable(bytes)
-                }
-                _ => Ok(bytes.to_vec()),
-            },
-            MessageBody::Large(_) => Err(crate::error::MailError::Parse(
-                "Cannot decode large message stream".to_string(),
-            )),
-        }
-    }
-}
+        let bytes = match &self.body {
+            MessageBody::Small(bytes) => bytes.clone(),
+            MessageBody::Large(large) => large.read_to_bytes().await?,
+        };
 
-/// Message body - optimized for small and large messages
-#[derive(Clone)]
-pub enum MessageBody {
-    /// Small message stored in memory (<1MB)
-    Small(Bytes),
-    /// Large message reference (streaming support)
-    Large(Arc<dyn AsyncRead + Send + Sync>),
-}
-
-impl std::fmt::Debug for MessageBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MessageBody::Small(bytes) => f.debug_tuple("Small").field(&bytes.len()).finish(),
-            MessageBody::Large(_) => f.debug_tuple("Large").field(&"<stream>").finish(),
+        match encoding {
+            crate::mime::ContentTransferEncoding::Base64 => crate::mime::decode_base64(&bytes),
+            crate::mime::ContentTransferEncoding::QuotedPrintable => {
+                crate::mime::decode_quoted_printable(&bytes)
+            }
+            _ => Ok(bytes.to_vec()),
         }
     }
 }
@@ -286,6 +443,97 @@ mod tests {
         let body = MessageBody::Small(Bytes::from("Hello, World!"));
         let headers = HeaderMap::new();
         let msg = MimeMessage::new(headers, body);
-        assert_eq!(msg.size(), 13);
+        // body_size returns the body bytes only.
+        assert_eq!(msg.body_size(), 13);
+        // size() now reports headers + final CRLF + body. With no headers the
+        // header block is just the empty-line separator (2 bytes).
+        assert_eq!(msg.size(), 15);
+        assert_eq!(msg.size(), msg.size_with_headers());
+    }
+
+    #[test]
+    fn size_with_headers_known_message() {
+        // Build a message with a deterministic single-header layout.
+        // Expected on-wire form:
+        //
+        //   subject: Hello\r\n
+        //   from: a@b\r\n
+        //   \r\n
+        //   Hi
+        //
+        // Bytes:
+        //   "subject: Hello\r\n" = 7 + 2 + 5 + 2 = 16
+        //   "from: a@b\r\n"      = 4 + 2 + 3 + 2 = 11
+        //   "\r\n"               = 2
+        //   body "Hi"            = 2
+        //   total                = 31
+        let mut headers = HeaderMap::new();
+        headers.insert("subject", "Hello");
+        headers.insert("from", "a@b");
+        let body = MessageBody::Small(Bytes::from("Hi"));
+        let msg = MimeMessage::new(headers, body);
+        assert_eq!(msg.body_size(), 2);
+        assert_eq!(msg.size_with_headers(), 31);
+        assert_eq!(msg.size(), 31);
+    }
+}
+
+#[cfg(test)]
+mod large_body_tests {
+    use super::*;
+    use std::env::temp_dir;
+
+    #[tokio::test]
+    async fn test_largebody_from_path_roundtrip() {
+        let mut path = temp_dir();
+        path.push(format!("rusmes_test_large_{}.bin", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"hello streaming world")
+            .await
+            .unwrap();
+        let large = LargeBody::from_path(&path).await.unwrap();
+        assert_eq!(large.size(), 21);
+        let data = large.read_to_bytes().await.unwrap();
+        assert_eq!(&data[..], b"hello streaming world");
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn test_messagebody_threshold_chooses_small() {
+        let mut path = temp_dir();
+        path.push(format!("rusmes_test_small_{}.bin", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"tiny").await.unwrap();
+        let body = MessageBody::from_path_with_threshold(&path, 1024)
+            .await
+            .unwrap();
+        assert!(matches!(body, MessageBody::Small(_)));
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn test_messagebody_threshold_chooses_large() {
+        let mut path = temp_dir();
+        path.push(format!("rusmes_test_thresh_{}.bin", uuid::Uuid::new_v4()));
+        // Write 2 KiB with threshold 1 KiB → Large
+        let data = vec![0u8; 2048];
+        tokio::fs::write(&path, &data).await.unwrap();
+        let body = MessageBody::from_path_with_threshold(&path, 1024)
+            .await
+            .unwrap();
+        assert!(matches!(body, MessageBody::Large(_)));
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn test_largebody_extract_text() {
+        let mut path = temp_dir();
+        path.push(format!("rusmes_test_text_{}.txt", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"Hello, Large World!")
+            .await
+            .unwrap();
+        let large = LargeBody::from_path(&path).await.unwrap();
+        let msg = MimeMessage::new(HeaderMap::new(), MessageBody::Large(large));
+        let text = msg.extract_text().await.unwrap();
+        assert_eq!(text, "Hello, Large World!");
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }

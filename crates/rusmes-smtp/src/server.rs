@@ -5,7 +5,9 @@ use rusmes_auth::AuthBackend;
 use rusmes_core::{MailProcessorRouter, RateLimiter};
 use rusmes_storage::StorageBackend;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpListener;
+use tracing::Instrument as _;
 
 /// SMTP server
 pub struct SmtpServer {
@@ -56,6 +58,18 @@ impl SmtpServer {
         Ok(())
     }
 
+    /// Return the local address the server is bound to (useful in tests to retrieve the
+    /// OS-assigned ephemeral port after binding with `"127.0.0.1:0"`).
+    pub fn local_addr(&self) -> anyhow::Result<std::net::SocketAddr> {
+        self.listener
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Server not bound - call bind() first"))
+            .and_then(|l| {
+                l.local_addr()
+                    .map_err(|e| anyhow::anyhow!("local_addr: {}", e))
+            })
+    }
+
     /// Serve incoming connections
     pub async fn serve(&self) -> anyhow::Result<()> {
         let listener = self
@@ -63,18 +77,53 @@ impl SmtpServer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Server not bound - call bind() first"))?;
 
-        loop {
-            let (stream, remote_addr) = listener.accept().await?;
-            tracing::info!("New SMTP connection from {}", remote_addr);
+        // Pre-parsed blocked network list — avoids repeated string->IpNetwork parsing
+        // on every accepted connection.
+        let blocked_networks = self.config.blocked_networks.clone();
 
-            // Check connection rate limit
-            let ip = remote_addr.ip();
-            if !self.rate_limiter.allow_connection(ip).await {
-                tracing::warn!("Connection rate limit exceeded for {}", ip);
-                // Drop the connection without sending a response
+        loop {
+            let (mut stream, remote_addr) = listener.accept().await?;
+            let peer_ip = remote_addr.ip();
+
+            // 1. Blocked-IP check — silent drop per RFC 5321 (no banner required)
+            let is_blocked = blocked_networks.iter().any(|net| net.contains(peer_ip));
+            if is_blocked {
+                tracing::info!(
+                    target: "smtp",
+                    peer = %peer_ip,
+                    "connection rejected: blocked IP"
+                );
+                rusmes_metrics::global_metrics().inc_smtp_connections_rejected_blocked();
+                // Drop the socket without sending any banner (RFC 5321 permits silent drop)
                 drop(stream);
                 continue;
             }
+
+            tracing::info!("New SMTP connection from {}", remote_addr);
+
+            // 2. Concurrent-connection-per-IP cap — sends 421 before dropping
+            if !self.rate_limiter.allow_connection(peer_ip).await {
+                tracing::warn!(
+                    peer = %peer_ip,
+                    "smtp.connection rejected: per-IP connection limit exceeded"
+                );
+                rusmes_metrics::global_metrics().inc_smtp_connections_rejected_overload();
+                // RFC 5321: a 421 response is appropriate when the server is temporarily
+                // unable to accept a new connection.
+                let _ = stream
+                    .write_all(b"421 4.7.0 Too many concurrent connections from your IP\r\n")
+                    .await;
+                drop(stream);
+                continue;
+            }
+
+            // 3. Assign a unique session ID and a tracing span for structured logging
+            let session_id = uuid::Uuid::new_v4();
+            let span = tracing::info_span!(
+                "smtp.session",
+                session_id = %session_id,
+                peer = %remote_addr
+            );
 
             let session = SmtpSessionHandler::new(
                 stream,
@@ -88,14 +137,20 @@ impl SmtpServer {
 
             let rate_limiter = self.rate_limiter.clone();
 
-            // Spawn a new task for each connection
-            tokio::spawn(async move {
-                if let Err(e) = session.handle().await {
-                    tracing::error!("SMTP session error from {}: {}", remote_addr, e);
+            // Spawn a new task for each connection, instrumented with the session span
+            tokio::spawn(
+                async move {
+                    if let Err(e) = session.handle().await {
+                        tracing::error!(
+                            error = %e,
+                            "smtp.session error: closing"
+                        );
+                    }
+                    // Release the connection slot when done
+                    rate_limiter.release_connection(peer_ip).await;
                 }
-                // Release the connection when done
-                rate_limiter.release_connection(ip).await;
-            });
+                .instrument(span),
+            );
         }
     }
 

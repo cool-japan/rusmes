@@ -22,6 +22,8 @@ SmtpServer
 |--------|-------------|
 | `server` | `SmtpServer` - TCP listener, connection dispatch |
 | `session` | `SmtpSession` - per-connection state machine and command handling |
+| `session/data` | DATA tempfile spill — payloads above threshold (default 1 MiB) spill to `tempfile::NamedTempFile`, returning `MessageBody::Large`; configurable via `SmtpConfig::data_tempfile_threshold` |
+| `outbound_pool` | Outbound connection pool — reusable TLS+TCP sessions to relay destinations |
 | `command` | `SmtpCommand` enum - all SMTP commands with parsed parameters |
 | `parser` | `parse_command()` - nom-based SMTP command parser |
 | `response` | `SmtpResponse` - SMTP reply codes and messages |
@@ -37,7 +39,8 @@ SmtpServer
 | RSET | Implemented | Reset transaction |
 | QUIT | Implemented | Close connection |
 | STARTTLS | Implemented | TLS upgrade |
-| AUTH | Implemented | PLAIN and LOGIN mechanisms |
+| AUTH | Implemented | PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256 mechanisms |
+| mTLS | Implemented | Mutual TLS — client certificate verification on TLS listeners |
 | NOOP | Implemented | No operation |
 | VRFY | Stub | Verify address |
 
@@ -73,7 +76,7 @@ pub struct SmtpConfig {
 ## Tests
 
 ```bash
-cargo test -p rusmes-smtp   # 20 tests
+cargo test -p rusmes-smtp   # 165 tests
 ```
 
 Tests cover: command parsing, response formatting, session state transitions, EHLO capability negotiation, and mail address extraction.

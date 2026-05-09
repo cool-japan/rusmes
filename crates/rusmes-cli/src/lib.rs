@@ -30,5 +30,8 @@
 //! rusmes check-config --config /etc/rusmes/rusmes.toml
 //! ```
 
+pub mod cli_def;
 pub mod client;
 pub mod commands;
+
+pub use cli_def::{should_color, CliApp, ColorChoice};

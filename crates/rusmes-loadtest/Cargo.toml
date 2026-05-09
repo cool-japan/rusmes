@@ -13,10 +13,10 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
-rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.1" }
-rusmes-imap = { path = "../rusmes-imap", version = "0.1.1" }
-rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.1" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.2" }
+rusmes-smtp = { path = "../rusmes-smtp", version = "0.1.2" }
+rusmes-imap = { path = "../rusmes-imap", version = "0.1.2" }
+rusmes-jmap = { path = "../rusmes-jmap", version = "0.1.2" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

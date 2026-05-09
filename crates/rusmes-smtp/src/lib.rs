@@ -59,11 +59,16 @@ pub mod auth;
 pub mod bdat;
 pub mod command;
 pub mod dsn;
+pub mod outbound_pool;
 pub mod parser;
 pub mod response;
 pub mod server;
 pub mod session;
 pub mod submission;
+pub mod transport;
+
+#[cfg(test)]
+mod tests;
 
 use ipnetwork::IpNetwork;
 use std::net::IpAddr;
@@ -71,11 +76,13 @@ use std::net::IpAddr;
 pub use bdat::{BdatCommand, BdatError, BdatState};
 pub use command::{MailParam, SmtpCommand};
 pub use dsn::{DsnError, DsnMailParams, DsnNotify, DsnRcptParams, DsnRet};
+pub use outbound_pool::{OutboundPool, OutboundPoolConfig, PooledConn, SmtpExtensions};
 pub use parser::parse_command;
 pub use response::SmtpResponse;
 pub use server::SmtpServer;
 pub use session::{SmtpConfig, SmtpSession, SmtpSessionHandler, SmtpState};
 pub use submission::{SubmissionConfig, SubmissionServer};
+pub use transport::SmtpMailTransport;
 
 /// Check if an IP address is in any of the given CIDR networks
 ///

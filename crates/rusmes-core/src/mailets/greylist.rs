@@ -578,13 +578,21 @@ mod tests {
         store.check_and_update(tuple.clone(), 0);
 
         // Entries count before cleanup
-        let count_before = store.entries.lock().unwrap().len();
+        let count_before = store
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         assert_eq!(count_before, 1);
 
         // Cleanup with 0 max age (should remove all)
         store.cleanup_old_entries(0);
 
-        let count_after = store.entries.lock().unwrap().len();
+        let count_after = store
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         assert_eq!(count_after, 0);
     }
 

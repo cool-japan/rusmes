@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-05-09
+
+### Added
+- JMAP: `EmailConversionContext<'_>` struct eliminates hardcoded placeholder values in `convert_mail_to_email`; adds `compute_blob_id` (SHA-256 content-addressed per RFC 8620 §6.2), `jmap_keywords_from_flags` (RFC 8621 §4.1.1: `$seen`, `$flagged`, `$answered`, `$draft`, `$deleted`)
+- JMAP: `make_placeholder_email` (Email/import) now extracts sender/from/to/subject/sent_at from parsed Mail headers
+- IMAP: COMPRESS=DEFLATE (RFC 4978) activated using `oxiarc-deflate 0.2.7` `RawDeflateWriter`/`RawInflateReader`; LZ77 sliding window preserved across sync-flush frames
+- Storage: AmateRS initial-connect endpoint cycling — sequential failover through `cluster_endpoints` Vec; server bootstraps successfully as long as any endpoint is reachable
+- Server: Privilege drop (`PrivilegeDrop`) with `chroot` + `setgid` + `setuid` in correct order; `[server] run_as_user`, `run_as_group`, `chroot` config fields; Linux-only (macOS emits `tracing::warn!`); `nix 0.31.2` for syscalls
+
+### Fixed
+- Sieve mailet: register `Sieve` (and the `SieveMailet` alias) in the
+  mailet factory so configurations using `mailet: Sieve` are recognised
+  instead of failing with `Unknown mailet: Sieve` (#1).
+
 ## [0.1.1] - 2026-03-25
 
 ### Fixed

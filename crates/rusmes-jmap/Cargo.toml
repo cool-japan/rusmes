@@ -12,10 +12,19 @@ homepage = "https://github.com/cool-japan/rusmes"
 repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
+[features]
+## Accept plain HTTP push endpoint URLs in addition to HTTPS.
+## Intended for integration tests that use wiremock (which binds without TLS).
+## Must NOT be enabled in production builds.
+test-push-http = []
+
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
-rusmes-storage = { path = "../rusmes-storage", version = "0.1.1" }
-rusmes-auth = { path = "../rusmes-auth", version = "0.1.1" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.2" }
+rusmes-core = { path = "../rusmes-core", version = "0.1.2" }
+rusmes-storage = { path = "../rusmes-storage", version = "0.1.2" }
+rusmes-auth = { path = "../rusmes-auth", version = "0.1.2" }
+rusmes-metrics = { path = "../rusmes-metrics", version = "0.1.2" }
+bytes = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -32,3 +41,13 @@ sha2 = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 async-stream = { workspace = true }
+dashmap = { workspace = true }
+getrandom = { workspace = true }
+jsonwebtoken = { workspace = true }
+p256 = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true }

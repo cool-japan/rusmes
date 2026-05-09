@@ -57,11 +57,22 @@
 //!
 //! # Blob Handling
 //!
-//! [`BlobStorage`] provides a content-addressed in-memory blob store keyed by
-//! SHA-256 hash.  Uploaded blobs are referenced by `blobId` strings throughout
-//! JMAP Email import/parse operations.
+//! [`BlobStorage`] supports two persistence backends:
+//!
+//! - **Memory** (default, via [`BlobStorage::new`]): blobs live in-memory and are
+//!   lost on restart. Existing callers are unaffected.
+//! - **Filesystem** (via [`BlobStorage::new_filesystem`]): blobs are written to
+//!   `<root>/blobs/<id>` with a JSON sidecar and survive server restarts. The
+//!   in-memory index is rebuilt by scanning `.meta.json` sidecars on open.
+//!
+//! Both backends enforce a configurable `max_blob_size` (default 50 MiB) and
+//! return [`UploadError::TooLarge`] before writing any bytes when the limit is
+//! exceeded. Uploaded blobs are referenced by `blobId` strings throughout JMAP
+//! Email import/parse operations.
 
 pub mod api;
+pub mod auth;
+pub mod back_reference;
 pub mod blob;
 pub mod eventsource;
 pub mod methods;
@@ -69,11 +80,15 @@ pub mod session;
 pub mod types;
 
 pub use api::JmapServer;
-pub use blob::{BlobStorage, UploadError, UploadResponse};
-pub use eventsource::{EventSourceManager, PushSubscription, StateChange};
+pub use auth::{
+    authenticate, extract_credentials, require_auth, AuthError, Credentials, SharedAuth,
+};
+pub use blob::{BlobMeta, BlobStorage, UploadError, UploadErrorBody, UploadResponse};
+pub use eventsource::{EventSourceManager, EventSourcePushHint, StateChange};
+pub mod web_push;
 pub use session::{Account, AccountCapability, Capability, Session};
 pub use types::{
-    Email, EmailAddress, EmailGetRequest, EmailGetResponse, EmailQueryRequest, EmailQueryResponse,
-    EmailSetRequest, EmailSetResponse, JmapError, JmapErrorType, JmapMethod, JmapRequest,
-    JmapResponse,
+    derive_account_id, Email, EmailAddress, EmailGetRequest, EmailGetResponse, EmailQueryRequest,
+    EmailQueryResponse, EmailSetRequest, EmailSetResponse, JmapError, JmapErrorType, JmapMethod,
+    JmapRequest, JmapResponse, Principal, PushSubscription,
 };

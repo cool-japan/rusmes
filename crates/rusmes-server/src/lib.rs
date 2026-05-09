@@ -48,4 +48,7 @@
 //! - POP3: [RFC 1939](https://www.rfc-editor.org/rfc/rfc1939)
 //! - JMAP: [RFC 8620](https://www.rfc-editor.org/rfc/rfc8620), [RFC 8621](https://www.rfc-editor.org/rfc/rfc8621)
 
+pub mod bootstrap;
+pub mod cli;
+pub mod privileges;
 pub mod session_logging;

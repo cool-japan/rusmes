@@ -27,6 +27,10 @@ pub enum MailError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Local-part contains non-ASCII bytes but SMTPUTF8 was not negotiated.
+    #[error("non-ASCII local-part requires SMTPUTF8 negotiation (RFC 6531)")]
+    NonAsciiLocalPartRequiresSMTPUTF8,
 }
 
 pub type Result<T> = std::result::Result<T, MailError>;

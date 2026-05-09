@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rusmes_proto::{Mail, MessageId, Username};
 use rusmes_storage::backends::{
-    filesystem::FilesystemBackend, postgres_complete::PostgresCompleteBackend,
+    amaters::{AmatersBackend, AmatersConfig},
+    filesystem::FilesystemBackend,
+    postgres_complete::PostgresCompleteBackend,
 };
 use rusmes_storage::{MailboxId, MessageStore, StorageBackend};
 use serde::{Deserialize, Serialize};
@@ -434,7 +436,11 @@ impl StorageMigrator {
                 let backend = PostgresCompleteBackend::new(&self.config.source_config).await?;
                 Ok(Box::new(backend))
             }
-            BackendType::Amaters => Err(anyhow::anyhow!("AmateRS backend not yet implemented")),
+            BackendType::Amaters => {
+                let config = AmatersConfig::from_url(&self.config.source_config)?;
+                let backend = AmatersBackend::new(config).await?;
+                Ok(Box::new(backend))
+            }
         }
     }
 
@@ -452,17 +458,19 @@ impl StorageMigrator {
                 }
                 Ok(Box::new(backend))
             }
-            BackendType::Amaters => Err(anyhow::anyhow!("AmateRS backend not yet implemented")),
+            BackendType::Amaters => {
+                let config = AmatersConfig::from_url(&self.config.dest_config)?;
+                let backend = AmatersBackend::new(config).await?;
+                if !self.config.dry_run {
+                    backend.init_schema().await?;
+                }
+                Ok(Box::new(backend))
+            }
         }
     }
 
-    async fn get_users(&self, _backend: &dyn StorageBackend) -> Result<Vec<Username>> {
-        // In production: query backend for all users
-        // For now, return placeholder users
-        Ok(vec![
-            Username::new("user1@example.com".to_string())?,
-            Username::new("user2@example.com".to_string())?,
-        ])
+    async fn get_users(&self, backend: &dyn StorageBackend) -> Result<Vec<Username>> {
+        backend.list_all_users().await
     }
 
     async fn count_totals(
@@ -1213,5 +1221,86 @@ mod tests {
         report.orphaned_messages.push("msg2".to_string());
 
         assert_eq!(report.orphaned_messages.len(), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests added for Slice G stub-check pass
+    // ---------------------------------------------------------------------------
+
+    /// Verify that `get_users` delegates to `StorageBackend::list_all_users`.
+    ///
+    /// We use `AmatersBackend` (the in-memory mock) as the backend.  An empty
+    /// store returns an empty user list, proving the call is forwarded rather
+    /// than returning a hardcoded list.
+    #[tokio::test]
+    async fn test_get_users_delegates_to_backend() {
+        use rusmes_storage::backends::amaters::{AmatersBackend, AmatersConfig};
+
+        let backend = AmatersBackend::new(AmatersConfig::default())
+            .await
+            .expect("AmatersBackend::new failed");
+
+        let config = MigrationConfig::default();
+        let migrator = StorageMigrator::new(config);
+
+        let users = migrator
+            .get_users(&backend)
+            .await
+            .expect("get_users failed");
+
+        // The in-memory AmateRS backend has no registered users, so the list
+        // must be empty — confirming the delegation (the old stub returned
+        // two hardcoded placeholders).
+        assert!(
+            users.is_empty(),
+            "expected empty user list from a fresh AmatersBackend, got {:?}",
+            users
+        );
+    }
+
+    /// Verify `AmatersConfig::from_url` parses valid URLs and rejects invalid
+    /// ones.
+    #[test]
+    fn test_amaters_config_from_url() {
+        use rusmes_storage::backends::amaters::AmatersConfig;
+
+        // Single endpoint, explicit keyspace.
+        let cfg = AmatersConfig::from_url("amaters://node1:9042/my_keyspace")
+            .expect("valid single-endpoint URL should parse");
+        assert_eq!(cfg.cluster_endpoints, vec!["node1:9042"]);
+        assert_eq!(cfg.metadata_keyspace, "my_keyspace");
+        assert_eq!(cfg.blob_keyspace, "my_keyspace_blobs");
+
+        // Multiple endpoints, no keyspace path → defaults.
+        let cfg = AmatersConfig::from_url("amaters://host1:9042,host2:9042")
+            .expect("valid multi-endpoint URL should parse");
+        assert_eq!(cfg.cluster_endpoints, vec!["host1:9042", "host2:9042"]);
+        assert_eq!(cfg.metadata_keyspace, "rusmes_metadata");
+        assert_eq!(cfg.blob_keyspace, "rusmes_blobs");
+
+        // Multiple endpoints with keyspace.
+        let cfg = AmatersConfig::from_url("amaters://host1:9042,host2:9042,host3:9042/prod")
+            .expect("valid three-endpoint URL should parse");
+        assert_eq!(cfg.cluster_endpoints.len(), 3);
+        assert_eq!(cfg.metadata_keyspace, "prod");
+        assert_eq!(cfg.blob_keyspace, "prod_blobs");
+
+        // Wrong scheme → error.
+        assert!(
+            AmatersConfig::from_url("cassandra://host1:9042/ks").is_err(),
+            "wrong scheme must be rejected"
+        );
+
+        // Missing port → error.
+        assert!(
+            AmatersConfig::from_url("amaters://host1/ks").is_err(),
+            "endpoint without port must be rejected"
+        );
+
+        // Empty authority → error.
+        assert!(
+            AmatersConfig::from_url("amaters:///keyspace").is_err(),
+            "empty host list must be rejected"
+        );
     }
 }

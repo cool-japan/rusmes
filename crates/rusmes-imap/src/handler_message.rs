@@ -5,6 +5,7 @@
 
 use crate::command::{StoreMode, UidSubcommand};
 use crate::handler::HandlerContext;
+use crate::mailbox_registry::MailboxEvent;
 use crate::response::ImapResponse;
 use crate::session::{ImapSession, ImapState};
 use rusmes_proto::MessageId;
@@ -40,7 +41,7 @@ pub(crate) async fn handle_fetch(
             // Get the full message content
             if let Some(mail) = ctx.message_store.get_message(metadata.message_id()).await? {
                 // Build FETCH response based on requested items
-                let fetch_items = build_fetch_items(&mail, metadata, items);
+                let fetch_items = build_fetch_items(&mail, metadata, items).await;
                 responses.push(format!("* {} FETCH ({})", seq_num, fetch_items));
             }
         }
@@ -66,10 +67,10 @@ pub(crate) async fn handle_store(
     flags: &[String],
 ) -> anyhow::Result<ImapResponse> {
     // Must have a mailbox selected
-    match session.state() {
-        ImapState::Selected { .. } => {}
+    let mailbox_id = match session.state() {
+        ImapState::Selected { mailbox_id } => *mailbox_id,
         _ => return Ok(ImapResponse::no(tag, "No mailbox selected")),
-    }
+    };
 
     // Parse sequence set
     let message_ids = parse_sequence_set(sequence)?;
@@ -80,17 +81,43 @@ pub(crate) async fn handle_store(
     // Apply flags based on mode
     // For now, we'll just set the flags (simplified implementation)
     // In a real implementation, we'd need to handle +FLAGS and -FLAGS properly
-    match mode {
-        StoreMode::Replace => {
-            ctx.message_store.set_flags(&message_ids, msg_flags).await?;
+    if !message_ids.is_empty() {
+        // NOTE: parse_sequence_set currently always returns an empty Vec (seq-number lookup
+        // is not fully wired), so this block is effectively a no-op for non-UID STORE. The
+        // UID variant (handle_uid_store) is the primary code path.
+        match mode {
+            StoreMode::Replace => {
+                ctx.message_store.set_flags(&message_ids, msg_flags).await?;
+            }
+            StoreMode::Add => {
+                // Would need to fetch current flags and merge
+                ctx.message_store.set_flags(&message_ids, msg_flags).await?;
+            }
+            StoreMode::Remove => {
+                // Would need to fetch current flags and remove
+                ctx.message_store.set_flags(&message_ids, msg_flags).await?;
+            }
         }
-        StoreMode::Add => {
-            // Would need to fetch current flags and merge
-            ctx.message_store.set_flags(&message_ids, msg_flags).await?;
-        }
-        StoreMode::Remove => {
-            // Would need to fetch current flags and remove
-            ctx.message_store.set_flags(&message_ids, msg_flags).await?;
+
+        // Broadcast FlagsChanged events. We need UIDs, not MessageIds, so we must look them
+        // up. To avoid a fragile MessageId round-trip after set_flags moves files from new/
+        // to cur/, we capture the UIDs from the metadata BEFORE calling set_flags.
+        // (handle_store currently never reaches here because parse_sequence_set returns []).
+        let all_metadata = ctx.message_store.get_mailbox_messages(&mailbox_id).await?;
+        let flag_strings: Vec<String> = flags.to_vec();
+        let target_uids: Vec<u32> = all_metadata
+            .iter()
+            .filter(|m| message_ids.contains(m.message_id()))
+            .map(|m| m.uid())
+            .collect();
+        for uid in target_uids {
+            ctx.mailbox_registry.publish(
+                mailbox_id,
+                MailboxEvent::FlagsChanged {
+                    uid,
+                    flags: flag_strings.clone(),
+                },
+            );
         }
     }
 
@@ -197,6 +224,17 @@ pub(crate) async fn handle_append(
             .set_flags(&[*metadata.message_id()], msg_flags)
             .await?;
     }
+
+    // Broadcast EXISTS update to all sessions watching this mailbox (RFC 3501 §5.2).
+    // We get the new count from the metadata store after the append has landed.
+    let new_count = ctx
+        .metadata_store
+        .get_mailbox_counters(&mailbox_id)
+        .await
+        .map(|c| c.exists)
+        .unwrap_or(0);
+    ctx.mailbox_registry
+        .publish(mailbox_id, MailboxEvent::Exists { count: new_count });
 
     // Return success with APPENDUID response code (RFC 4315)
     let uid_validity = mailbox_obj.map(|mb| mb.uid_validity()).unwrap_or(0);
@@ -386,18 +424,27 @@ pub(crate) async fn handle_expunge(
     // Find messages with \Deleted flag and collect their sequence numbers
     let mut deleted_messages = Vec::new();
     let mut expunge_responses = Vec::new();
+    let mut expunge_seqs: Vec<u32> = Vec::new();
 
     for (seq_num, metadata) in messages.iter().enumerate() {
         if metadata.flags().is_deleted() {
             deleted_messages.push(*metadata.message_id());
             // IMAP sequence numbers are 1-based
-            expunge_responses.push(format!("* {} EXPUNGE", seq_num + 1));
+            let seq = (seq_num + 1) as u32;
+            expunge_responses.push(format!("* {} EXPUNGE", seq));
+            expunge_seqs.push(seq);
         }
     }
 
     // Delete the messages from storage
     if !deleted_messages.is_empty() {
         ctx.message_store.delete_messages(&deleted_messages).await?;
+
+        // Broadcast EXPUNGE events to all sessions watching this mailbox.
+        for seq in &expunge_seqs {
+            ctx.mailbox_registry
+                .publish(*mailbox_id, MailboxEvent::Expunge { seq: *seq });
+        }
     }
 
     // Build response with untagged EXPUNGE responses
@@ -437,6 +484,8 @@ pub(crate) async fn handle_close(
 
     // Deselect mailbox - return to Authenticated state
     session.state = ImapState::Authenticated;
+    // Drop the broadcast subscription — the mailbox is no longer selected.
+    session.mailbox_event_rx = None;
 
     // CLOSE does not send untagged EXPUNGE responses (unlike EXPUNGE command)
     Ok(ImapResponse::ok(tag, "CLOSE completed"))
@@ -506,7 +555,7 @@ async fn handle_uid_fetch(
     for (seq_num, metadata) in matching_metadata.iter().enumerate() {
         if let Some(mail) = ctx.message_store.get_message(metadata.message_id()).await? {
             // Build FETCH response based on requested items
-            let fetch_items = build_fetch_items(&mail, metadata, items);
+            let fetch_items = build_fetch_items(&mail, metadata, items).await;
             // Include UID in response (already included in fetch_items if requested)
             // Sequence number is 1-based
             responses.push(format!("* {} FETCH ({})", seq_num + 1, fetch_items));
@@ -541,12 +590,21 @@ async fn handle_uid_store(
     // Get all messages in mailbox
     let all_metadata = ctx.message_store.get_mailbox_messages(mailbox_id).await?;
 
-    // Parse UID sequence set and filter messages by UID
+    // Parse UID sequence set and filter messages by UID.
+    // Capture both the MessageIds (for set_flags) and the UIDs (for broadcast)
+    // from the SAME snapshot to avoid a fragile MessageId round-trip after
+    // set_flags moves the file from new/ to cur/.
     let uid_set = parse_uid_sequence_set(uid_sequence, &all_metadata)?;
     let message_ids: Vec<MessageId> = all_metadata
         .iter()
         .filter(|m| uid_set.contains(&m.uid()))
         .map(|m| *m.message_id())
+        .collect();
+    // Capture UIDs now, before set_flags may relocate the files.
+    let target_uids: Vec<u32> = all_metadata
+        .iter()
+        .filter(|m| uid_set.contains(&m.uid()))
+        .map(|m| m.uid())
         .collect();
 
     if message_ids.is_empty() {
@@ -569,6 +627,20 @@ async fn handle_uid_store(
             // Would need to fetch current flags and remove
             ctx.message_store.set_flags(&message_ids, msg_flags).await?;
         }
+    }
+
+    // Broadcast FlagsChanged to all sessions watching this mailbox.
+    // Use UIDs captured before set_flags to avoid a second get_mailbox_messages call
+    // (set_flags moves files from new/ to cur/, which can change MessageId lookup reliability).
+    let flag_strings: Vec<String> = flags.to_vec();
+    for uid in target_uids {
+        ctx.mailbox_registry.publish(
+            *mailbox_id,
+            MailboxEvent::FlagsChanged {
+                uid,
+                flags: flag_strings.clone(),
+            },
+        );
     }
 
     Ok(ImapResponse::ok(tag, "UID STORE completed"))
@@ -821,18 +893,27 @@ async fn handle_uid_expunge(
     // Find messages matching UIDs that also have \Deleted flag
     let mut deleted_messages = Vec::new();
     let mut expunge_responses = Vec::new();
+    let mut expunge_seqs: Vec<u32> = Vec::new();
 
     for (seq_num, metadata) in all_metadata.iter().enumerate() {
         if uid_set.contains(&metadata.uid()) && metadata.flags().is_deleted() {
             deleted_messages.push(*metadata.message_id());
             // IMAP sequence numbers are 1-based
-            expunge_responses.push(format!("* {} EXPUNGE", seq_num + 1));
+            let seq = (seq_num + 1) as u32;
+            expunge_responses.push(format!("* {} EXPUNGE", seq));
+            expunge_seqs.push(seq);
         }
     }
 
     // Delete the messages from storage
     if !deleted_messages.is_empty() {
         ctx.message_store.delete_messages(&deleted_messages).await?;
+
+        // Broadcast EXPUNGE events to all sessions watching this mailbox.
+        for seq in &expunge_seqs {
+            ctx.mailbox_registry
+                .publish(*mailbox_id, MailboxEvent::Expunge { seq: *seq });
+        }
     }
 
     // Build response with untagged EXPUNGE responses
@@ -898,7 +979,7 @@ pub(crate) fn parse_sequence_numbers(sequence: &str, max: usize) -> anyhow::Resu
 }
 
 /// Build FETCH response items
-pub(crate) fn build_fetch_items(
+pub(crate) async fn build_fetch_items(
     mail: &rusmes_proto::Mail,
     metadata: &MessageMetadata,
     items: &[String],
@@ -934,7 +1015,7 @@ pub(crate) fn build_fetch_items(
             "BODY[]" | "BODY.PEEK[]" => {
                 // Get full message body
                 let message = mail.message();
-                if let Ok(body_text) = message.extract_text() {
+                if let Ok(body_text) = message.extract_text().await {
                     let body_len = body_text.len();
                     fetch_items.push(format!("BODY[] {{{}}}\r\n{}", body_len, body_text));
                 } else {

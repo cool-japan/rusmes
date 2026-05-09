@@ -34,5 +34,13 @@ Backed by Tantivy (Rust-native full-text search engine)
 
 ## Dependencies
 - `rusmes-proto` - mail types
-- `tantivy` (planned) - full-text search engine
+- `tantivy` - full-text search engine
 - `tokio` - async runtime
+
+## Tests
+
+```bash
+cargo test -p rusmes-search   # 35 tests
+```
+
+Tests cover: index/search/delete operations, result caching, index size monitoring, and reindex worker functionality.

@@ -57,7 +57,11 @@ impl VirusScanMailet {
     }
 
     /// Convert message to bytes for scanning
-    fn message_to_bytes(mail: &Mail) -> Vec<u8> {
+    ///
+    /// For `MessageBody::Large`, the body is read asynchronously before
+    /// serialisation.  On read failure the body section is empty and a warning
+    /// is logged (fail-open to avoid blocking mail delivery).
+    async fn message_to_bytes(mail: &Mail) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         // Serialize headers
@@ -79,11 +83,14 @@ impl VirusScanMailet {
             rusmes_proto::MessageBody::Small(body_bytes) => {
                 bytes.extend_from_slice(body_bytes);
             }
-            rusmes_proto::MessageBody::Large(_) => {
-                // For large messages, we'll just skip the body
-                // This is a limitation of the current implementation
-                tracing::warn!("Skipping large message body in virus scan");
-            }
+            rusmes_proto::MessageBody::Large(large) => match large.read_to_bytes().await {
+                Ok(body_bytes) => {
+                    bytes.extend_from_slice(&body_bytes);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read large message body for virus scan: {e}");
+                }
+            },
         }
 
         bytes
@@ -215,7 +222,7 @@ impl Mailet for VirusScanMailet {
         tracing::debug!("Scanning mail {} for viruses", mail.id());
 
         // Extract message content
-        let message_bytes = Self::message_to_bytes(mail);
+        let message_bytes = Self::message_to_bytes(mail).await;
 
         // Scan with ClamAV
         let result = match Self::scan_message(&message_bytes, &self.config).await {
@@ -409,10 +416,10 @@ mod tests {
         assert!(!mailet.reject_on_virus);
     }
 
-    #[test]
-    fn test_message_to_bytes_no_headers() {
+    #[tokio::test]
+    async fn test_message_to_bytes_no_headers() {
         let mail = create_test_mail("sender@example.com", vec!["recipient@test.com"]);
-        let bytes = VirusScanMailet::message_to_bytes(&mail);
+        let bytes = VirusScanMailet::message_to_bytes(&mail).await;
         let message = String::from_utf8_lossy(&bytes);
 
         // With no headers, we still have one separator before body

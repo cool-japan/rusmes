@@ -21,7 +21,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.75"
@@ -46,11 +46,11 @@ nom = "8.0"
 mail-parser = "0.11"
 
 # Networking
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 
 # Storage
-sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite", "runtime-tokio-rustls", "uuid", "any"] }
+sqlx = { version = "0.8", features = ["postgres", "mysql", "sqlite", "runtime-tokio-rustls", "uuid", "any", "migrate"] }
 sled = "0.34"
 
 # Search
@@ -64,12 +64,14 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto",
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["registry", "env-filter", "fmt"] }
 tracing-opentelemetry = "0.32"
 
 # HTTP (for JMAP)
 axum = "0.8"
 hyper = "1.8"
+tower = "0.5"
+http-body-util = "0.1"
 
 # UUID
 uuid = { version = "1.22", features = ["v4", "serde"] }
@@ -86,6 +88,7 @@ base64 = "0.22"
 
 # System info
 hostname = "0.4"
+html2text = "0.17.1"
 
 # Testing
 mockall = "0.14"
@@ -93,13 +96,14 @@ wiremock = "0.6"
 tempfile = "3.27"
 proptest = "1.11"
 quickcheck = "1.1"
-reqwest = { version = "0.13", features = ["json", "form", "rustls"], default-features = false }
+reqwest = { version = "0.13", features = ["json", "form", "rustls", "blocking"], default-features = false }
 rand = "0.10"
 
 # ACME / TLS certificate provisioning
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
-rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 pem-rfc7468 = { version = "1.0", features = ["std"] }
+rustls-pemfile = "2"
 
 # Async I/O utilities
 tokio-util = { version = "0.7", features = ["io"] }
@@ -114,12 +118,14 @@ hex = "0.4"
 rsa = { version = "0.9", features = ["sha2"] }
 ed25519-dalek = "2.2"
 aes-gcm = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+hkdf = "0.12"
 
 # Auth / identity
 ldap3 = "0.12"
 argon2 = "0.5"
 oauth2 = "5.0"
-jsonwebtoken = "10.3"
+jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 
 # Network
 ipnetwork = "0.21"
@@ -131,9 +137,9 @@ async-stream = "0.3"
 tokio-test = "0.4"
 
 # Compression / archiving
-oxiarc-deflate = "0.2.6"
-oxiarc-zstd = "0.2.6"
-oxiarc-archive = "0.2.6"
+oxiarc-deflate = { version = "0.2.8", features = ["async-io"] }
+oxiarc-zstd = "0.2.8"
+oxiarc-archive = "0.2.8"
 
 # CLI
 clap_complete = "4.6"
@@ -165,4 +171,31 @@ criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 # Load testing
 clap = { version = "4.6", features = ["derive", "env"] }
 hdrhistogram = "7.5"
+
+# Concurrency / Locking
+fs2 = "0.4.3"
+dashmap = "6.1.0"
+parking_lot = "0.12.5"
+
+# Cache
+lru = "0.18.0"
+
+# CLI / documentation
+clap_mangen = "0.3.0"
+
+# Internationalization
+idna = "1.1.0"
+
+# Testing
+mockito = "1.7.2"
+assert_cmd = "2.0"
+
+# AmateRS distributed KV store (C deps via rustls/tonic; keep opt-in via amaters-backend feature)
+amaters-sdk-rust = { path = "../amaters/crates/amaters-sdk-rust", version = "0.2.1" }
+
+nix = { version = "0.31.2", features = ["user", "fs"] }
+
+[patch.crates-io]
+oxiarc-deflate = { path = "../oxiarc/oxiarc-deflate" }
+oxiarc-core = { path = "../oxiarc/oxiarc-core" }
 

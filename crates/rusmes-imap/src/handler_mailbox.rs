@@ -57,6 +57,10 @@ pub(crate) async fn handle_select(
             // Update session state
             session.state = ImapState::Selected { mailbox_id };
 
+            // Subscribe to cross-session broadcast for this mailbox (RFC 3501 §5.2).
+            // Any previous subscription is replaced when switching mailboxes.
+            session.mailbox_event_rx = Some(ctx.mailbox_registry.subscribe(mailbox_id));
+
             // Build response with untagged responses
             let mode = if read_only { "READ-ONLY" } else { "READ-WRITE" };
             let response_text = format!(

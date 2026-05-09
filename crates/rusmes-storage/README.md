@@ -12,7 +12,8 @@ StorageBackend (trait)
 
 Backends:
 ├── FilesystemBackend  (maildir format)
-└── PostgresBackend    (SQL, schema defined)
+├── PostgresBackend    (SQL, schema defined)
+└── AmatersBackend     (distributed, feature-gated as `amaters-backend`)
 ```
 
 ## Storage Traits
@@ -63,8 +64,7 @@ with connection pooling (sqlx), full-text search, quota enforcement, and MODSEQ
 tracking (2,592 lines).
 
 ### AmateRS (`backends::amaters`)
-All trait methods implemented as a mock (1,390 lines). Real distributed client
-integration is pending.
+AmateRS distributed storage — real client integration via `amaters-sdk-rust v0.2.0` (feature-gated as `amaters-backend`); initial-connect endpoint cycling for high availability. All trait methods fully implemented.
 
 ## Dependencies
 - `rusmes-proto` - core types
@@ -75,5 +75,5 @@ integration is pending.
 ## Tests
 
 ```bash
-cargo test -p rusmes-storage   # 166 tests
+cargo test -p rusmes-storage   # 195 tests
 ```

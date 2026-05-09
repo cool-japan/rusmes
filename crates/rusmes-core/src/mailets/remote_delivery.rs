@@ -105,7 +105,10 @@ impl RemoteDeliveryMailet {
     }
 
     /// Serialize mail message to bytes
-    fn serialize_message(mail: &Mail) -> Vec<u8> {
+    ///
+    /// For `MessageBody::Large`, the bytes are read asynchronously before
+    /// serialisation.
+    async fn serialize_message(mail: &Mail) -> Vec<u8> {
         let mut data = Vec::new();
 
         // Add headers
@@ -126,9 +129,14 @@ impl RemoteDeliveryMailet {
             rusmes_proto::MessageBody::Small(body_bytes) => {
                 data.extend_from_slice(body_bytes);
             }
-            rusmes_proto::MessageBody::Large(_) => {
-                tracing::warn!("Large message body not fully supported in relay");
-            }
+            rusmes_proto::MessageBody::Large(large) => match large.read_to_bytes().await {
+                Ok(bytes) => {
+                    data.extend_from_slice(&bytes);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read large message body for relay: {e}");
+                }
+            },
         }
 
         data
@@ -266,7 +274,7 @@ impl RemoteDeliveryMailet {
         }
 
         // Send message content
-        let message_data = Self::serialize_message(mail);
+        let message_data = Self::serialize_message(mail).await;
         stream.write_all(&message_data).await?;
 
         // End message with CRLF.CRLF
@@ -537,7 +545,7 @@ mod tests {
             None,
         );
 
-        let data = RemoteDeliveryMailet::serialize_message(&mail);
+        let data = RemoteDeliveryMailet::serialize_message(&mail).await;
         let text = String::from_utf8_lossy(&data);
 
         assert!(text.contains("from: sender@example.com"));

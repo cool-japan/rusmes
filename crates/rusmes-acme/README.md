@@ -269,19 +269,19 @@ spec:
 Run the test suite:
 
 ```bash
-cargo test
+cargo nextest run -p rusmes-acme --all-features   # 74 tests
 ```
 
 Run specific test:
 
 ```bash
-cargo test test_http01_challenge_flow
+cargo nextest run -p rusmes-acme -E 'test(test_http01_challenge_flow)'
 ```
 
 Run with output:
 
 ```bash
-cargo test -- --nocapture
+cargo test -p rusmes-acme -- --nocapture
 ```
 
 ## Security Considerations

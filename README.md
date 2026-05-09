@@ -6,8 +6,8 @@ A next-generation distributed mail server built in Rust, porting Apache JAMES ar
 
 - **Multi-Protocol Support**
   - ✅ SMTP (RFC 5321) - Full implementation with STARTTLS, AUTH, PIPELINING
-  - ✅ IMAP (RFC 9051) - Full implementation
-  - ✅ JMAP (RFC 8620/8621) - Full HTTP/JSON API
+  - ✅ IMAP (RFC 9051) - Full implementation with COMPRESS=DEFLATE (RFC 4978)
+  - ✅ JMAP (RFC 8620/8621) - Full HTTP/JSON API with Email/set, Identity/set, VacationResponse/set, EmailSubmission/set CRUD and RFC 5256 threading, `compute_blob_id` (SHA-256 blob IDs), `jmap_keywords_from_flags` (RFC 8621)
   - ✅ POP3 (RFC 1939) - Full implementation with STARTTLS, APOP, CAPA
 
 - **Flexible Message Processing**
@@ -18,15 +18,17 @@ A next-generation distributed mail server built in Rust, porting Apache JAMES ar
 
 - **Multiple Storage Backends**
   - Filesystem (maildir format)
-  - PostgreSQL (ready for implementation)
-  - AmateRS distributed storage (ready for implementation)
+  - PostgreSQL — full backend (connection pool, FTS, quota, MODSEQ)
+  - AmateRS distributed storage — real client integration (amaters-sdk-rust v0.2.0, feature-gated)
 
 - **Enterprise Features**
-  - Authentication backends (LDAP, OAuth, PAM ready)
-  - Full-text search with Tantivy (ready)
-  - Prometheus metrics
+  - Authentication backends (LDAP, OAuth2/OIDC, PAM) with bearer token support
+  - Full-text search with Tantivy
+  - Prometheus metrics HTTP endpoint on `/metrics` (port 9090)
+  - Active connections gauge per protocol via RAII `ConnectionGuard`
   - Legal archiving integration (Legalis-RS)
-  - AI-powered mail analysis (OxiFY integration ready)
+  - AI-powered mail analysis (OxiFY integration)
+  - Privilege drop: chroot + setuid/setgid (Linux-only) via `PrivilegeDrop`
 
 ## 📦 Project Structure
 
@@ -169,7 +171,7 @@ cargo test -p rusmes-core
 ## Test Coverage
 
 ```
-Total: 1,942 tests passing (49 skipped)
+Total: 2,309 tests passing (60 skipped)
 Zero warnings, zero errors
 ```
 
@@ -187,7 +189,7 @@ RusMES uses a **mailet-based processing pipeline**:
 
 ## 🚧 Development Status
 
-**v0.1.1 Released: 2026-03-25** 🎉
+**v0.1.2 Released: 2026-05-09** 🎉
 
 **Phase 1-2: Core Foundation** ✅ Complete
 - Mail types, storage traits, mailet engine
@@ -202,8 +204,9 @@ RusMES uses a **mailet-based processing pipeline**:
 - Ready for full protocol implementation
 
 **Phase 5: JMAP Server** ✅ Complete
-- HTTP API structure, JSON types
-- Ready for method implementations
+- Full RFC 8620 method suite: Email/set (create/update/destroy), Identity/set, VacationResponse/set, EmailSubmission/set
+- RFC 5256 email threading (References-chain + subject fallback, SHA-256 thread IDs)
+- File-backed IdentityStore, VacationStore, MailTransport abstraction
 
 **Phase 6: Storage Backends** ✅ Complete
 - ✅ Filesystem backend (maildir)

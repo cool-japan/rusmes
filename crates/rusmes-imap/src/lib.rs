@@ -1,5 +1,11 @@
 //! IMAP protocol implementation for RusMES
 //!
+// The `BufReader<RawInflateReader<...>>` type used in imap_session_loop after
+// COMPRESS=DEFLATE negotiation is deeply nested enough that the default recursion
+// limit (128) is exhausted when the trait solver proves `Send` for the
+// tokio::spawn future in server.rs. Bump to 512 to give the solver enough headroom.
+#![recursion_limit = "1024"]
+//!
 //! This crate provides a full-featured, RFC-compliant IMAP server implementation
 //! built on Tokio for asynchronous I/O.
 //!
@@ -83,6 +89,7 @@ pub mod handler;
 pub mod handler_auth;
 pub mod handler_mailbox;
 pub mod handler_message;
+pub mod mailbox_registry;
 pub mod mailbox_watcher;
 pub mod parser;
 pub mod qresync;
@@ -102,6 +109,7 @@ pub use condstore::{
 };
 pub use config::ImapConfig;
 pub use handler::{handle_command, HandlerContext};
+pub use mailbox_registry::{MailboxEvent, MailboxRegistry};
 pub use mailbox_watcher::{MailboxChanges, MailboxWatcher};
 pub use parser::{has_literal, parse_append_command, parse_command, LiteralType};
 pub use qresync::{
@@ -110,7 +118,7 @@ pub use qresync::{
 };
 pub use response::ImapResponse;
 pub use server::ImapServer;
-pub use session::{ImapSession, ImapState, MailboxSnapshot};
+pub use session::{format_mailbox_event_pub, ImapSession, ImapState, MailboxSnapshot};
 pub use special_use::{
     format_capability_response, format_list_extended, parse_create_special_use,
     suggest_special_use, validate_special_use_flags, SpecialUse, SpecialUseError, SpecialUseFlags,

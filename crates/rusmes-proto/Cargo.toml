@@ -21,3 +21,6 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+# IDN (Internationalized Domain Names) normalization per RFC 3490 for case-insensitive,
+# Unicode-aware domain comparison in `MailAddress::is_local`.
+idna = { workspace = true }

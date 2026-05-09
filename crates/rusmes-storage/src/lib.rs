@@ -54,11 +54,13 @@
 //! higher-level protocol handlers, enabling Prometheus-compatible export.
 
 pub mod backends;
+pub mod backup;
 pub mod metrics;
 pub mod modseq;
 mod traits;
 mod types;
 
+pub use backup::{backup, restore};
 pub use metrics::{Histogram, MetricsSummary, StorageMetrics, StorageTimer};
 pub use modseq::{MailboxModSeq, MessageModSeq, ModSeq, ModSeqGenerator};
 pub use traits::{MailboxStore, MessageStore, MetadataStore, StorageBackend};
@@ -66,3 +68,95 @@ pub use types::{
     Mailbox, MailboxCounters, MailboxId, MailboxPath, MessageFlags, MessageMetadata, Quota,
     SearchCriteria, SpecialUseAttributes,
 };
+
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Events emitted by storage backends after write operations.
+///
+/// Consumed by rusmes-search (Cluster 9) for incremental indexing and by
+/// any other subscriber that needs to react to mailbox changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StorageEvent {
+    /// A message was stored in a mailbox.
+    MessageStored {
+        account: String,
+        mailbox: String,
+        uid: u32,
+    },
+    /// A message was expunged (permanently deleted) from a mailbox.
+    MessageExpunged {
+        account: String,
+        mailbox: String,
+        uid: u32,
+    },
+}
+
+/// Configuration for which storage backend to build.
+#[derive(Debug, Clone)]
+pub enum BackendKind {
+    /// Filesystem (maildir) backend.
+    Filesystem { path: String },
+    /// SQLite backend (file path, e.g. `"sqlite:///var/mail/rusmes.db?mode=rwc"`).
+    Sqlite { connection_string: String },
+    /// PostgreSQL backend.
+    Postgres { connection_string: String },
+    /// AmateRS distributed backend (mock only).
+    Amaters {
+        endpoints: Vec<String>,
+        replication_factor: usize,
+    },
+}
+
+/// Construct a storage backend from configuration.
+///
+/// For SQL backends, migrations are run before returning.
+/// For the PostgreSQL backend, a background VACUUM scheduler is also started
+/// with the default 24-hour interval.
+pub async fn build_storage(kind: &BackendKind) -> anyhow::Result<Arc<dyn StorageBackend>> {
+    match kind {
+        BackendKind::Filesystem { path } => {
+            use backends::filesystem::FilesystemBackend;
+            let backend = FilesystemBackend::new(path);
+            Ok(Arc::new(backend))
+        }
+        BackendKind::Sqlite { connection_string } => {
+            use backends::sqlite::SqliteBackend;
+            // SqliteBackend::new runs migrations automatically.
+            let backend = SqliteBackend::new(connection_string).await?;
+            Ok(Arc::new(backend))
+        }
+        BackendKind::Postgres { connection_string } => {
+            use backends::postgres::PostgresBackend;
+            // with_config starts the background VACUUM task automatically.
+            let backend = PostgresBackend::new(connection_string).await?;
+            // Also run the hand-rolled idempotent migration DDL for backwards compat.
+            backend.init_schema().await?;
+            Ok(Arc::new(backend))
+        }
+        BackendKind::Amaters {
+            endpoints,
+            replication_factor,
+        } => {
+            use backends::amaters::{AmatersBackend, AmatersConfig};
+            let config = AmatersConfig {
+                cluster_endpoints: endpoints.clone(),
+                replication_factor: *replication_factor,
+                ..Default::default()
+            };
+            let backend = AmatersBackend::new(config).await?;
+            Ok(Arc::new(backend))
+        }
+    }
+}
+
+/// Perform compaction: remove expunged messages older than `older_than`.
+///
+/// Dispatches to `backend.compact_expunged(older_than)`.
+pub async fn compact_expunged(
+    backend: &dyn StorageBackend,
+    older_than: Duration,
+) -> anyhow::Result<usize> {
+    backend.compact_expunged(older_than).await
+}

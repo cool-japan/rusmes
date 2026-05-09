@@ -13,7 +13,7 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.2" }
 serde = { workspace = true }
 toml = { workspace = true }
 serde_yaml = { workspace = true }

@@ -71,6 +71,8 @@ pub enum ImapCommand {
         mechanism: String,
         initial_response: Option<String>,
     },
+    /// COMPRESS mechanism (RFC 4978) — e.g. `COMPRESS DEFLATE`
+    Compress { mechanism: String },
     /// UID command variants (RFC 9051 Section 6.4.8)
     Uid { subcommand: Box<UidSubcommand> },
 }

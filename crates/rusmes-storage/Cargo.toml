@@ -13,7 +13,7 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.2" }
 tokio = { workspace = true, features = ["fs"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -25,6 +25,19 @@ sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite"] }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
+walkdir = { workspace = true }
+thiserror = { workspace = true }
+fs2 = { workspace = true }
+oxiarc-archive = { workspace = true }
+sha2 = { workspace = true }
+
+# amaters-backend pulls C deps via amaters-sdk-rust (aws-lc-rs, ring, tonic); keep opt-in
+amaters-sdk-rust = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable the real amaters-sdk-rust gRPC client in place of the in-memory mock.
+amaters-backend = ["dep:amaters-sdk-rust"]
 
 [dev-dependencies]
 tokio-test = { workspace = true }

@@ -39,6 +39,7 @@ fn pop3_command(input: &str) -> IResult<&str, Pop3Command> {
         apop_command,
         capa_command,
         stls_command,
+        auth_command,
     ))
     .parse(input)
 }
@@ -188,6 +189,48 @@ fn stls_command(input: &str) -> IResult<&str, Pop3Command> {
     map(tag_no_case("STLS"), |_| Pop3Command::Stls).parse(input)
 }
 
+/// Parse a SASL mechanism token (uppercase letters, digits, dash, underscore).
+fn sasl_mechanism(input: &str) -> IResult<&str, String> {
+    map(
+        take_while1(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        |s: &str| s.to_string(),
+    )
+    .parse(input)
+}
+
+/// Parse a SASL initial-response token (base64 alphabet plus `=` padding,
+/// or the special token `=` meaning "empty initial response" per RFC 5034).
+fn sasl_initial_response(input: &str) -> IResult<&str, String> {
+    map(
+        take_while1(|c: char| {
+            c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == ','
+        }),
+        |s: &str| s.to_string(),
+    )
+    .parse(input)
+}
+
+/// Parse AUTH command (RFC 1734 + RFC 5034)
+///
+/// Forms accepted:
+/// - `AUTH`                          — request mechanism listing
+/// - `AUTH MECHANISM`                — start exchange, no initial response
+/// - `AUTH MECHANISM <base64-or-=>`  — start exchange with initial response
+fn auth_command(input: &str) -> IResult<&str, Pop3Command> {
+    map(
+        (
+            tag_no_case("AUTH"),
+            opt(preceded(space1, sasl_mechanism)),
+            opt(preceded(space1, sasl_initial_response)),
+        ),
+        |(_, mechanism, initial_response)| Pop3Command::Auth {
+            mechanism,
+            initial_response,
+        },
+    )
+    .parse(input)
+}
+
 /// Helper to consume optional trailing whitespace
 #[allow(dead_code)]
 fn trailing_space(input: &str) -> IResult<&str, ()> {
@@ -269,6 +312,82 @@ mod tests {
         assert_eq!(
             result.expect("CAPA with surrounding whitespace parse should succeed"),
             Pop3Command::Capa
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_bare() {
+        // "AUTH" with no arguments — request mechanism listing.
+        let result = parse_command("AUTH").expect("bare AUTH should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: None,
+                initial_response: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_mechanism_only() {
+        let result = parse_command("AUTH PLAIN").expect("AUTH PLAIN should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".to_string()),
+                initial_response: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_with_initial_response() {
+        let result =
+            parse_command("AUTH PLAIN AGFsaWNlAHNlY3JldA==").expect("AUTH PLAIN <ir> should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".to_string()),
+                initial_response: Some("AGFsaWNlAHNlY3JldA==".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_case_insensitive_verb() {
+        let result = parse_command("auth PLAIN").expect("lowercase auth should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".to_string()),
+                initial_response: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_scram_sha_256() {
+        // Mechanism names with dashes must be accepted.
+        let result = parse_command("AUTH SCRAM-SHA-256").expect("AUTH SCRAM-SHA-256 should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: Some("SCRAM-SHA-256".to_string()),
+                initial_response: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_auth_empty_initial_response_token() {
+        // RFC 5034: a single `=` is the canonical encoding of an empty IR.
+        let result = parse_command("AUTH PLAIN =").expect("AUTH PLAIN = should parse");
+        assert_eq!(
+            result,
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".to_string()),
+                initial_response: Some("=".to_string()),
+            }
         );
     }
 }

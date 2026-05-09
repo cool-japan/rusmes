@@ -9,12 +9,12 @@
 
 ## Project Status
 
-**Last Updated**: 2026-03-25
-**Total Lines of Code**: ~87,579 Rust lines (71,926 code lines)
+**Last Updated**: 2026-05-09
+**Total Lines of Code**: 112,187 Rust lines (92,215 code lines, 324 files)
 **Crates**: 17 (including rusmes-acme, rusmes-loadtest)
-**Test Coverage**: 1,942 unit tests passing (100%), integration tests require live server
+**Test Coverage**: 2,309 unit tests passing (100%), 60 skipped, integration tests require live server
 **Build Status**: ✅ Clean (ZERO warnings from our code)
-**Release**: v0.1.1 (2026-03-25) 🎉
+**Release**: v0.1.2 (2026-05-09) 🎉
 
 ---
 
@@ -41,7 +41,7 @@
 - [x] AUTH: PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256 via SASL
 - [x] Extensions: PIPELINING, 8BITMIME, SMTPUTF8, SIZE, DSN (RFC 3461), BDAT/CHUNKING (RFC 3030)
 - [x] Submission server (port 587, mandatory STARTTLS + AUTH)
-- [-] SCRAM-SHA-256 salt/iteration count — placeholder values
+- [x] SCRAM-SHA-256 salt/iteration count — real credential storage via AuthBackend (landed 2026-05-03)
 
 ## IMAP Server ✅
 - [x] nom-based parser (1,222 lines, LITERAL+ aware)
@@ -49,31 +49,36 @@
 - [x] UID variants of all applicable commands
 - [x] Extensions: CONDSTORE, QRESYNC (RFC 7162), LITERAL+ (RFC 7888), SPECIAL-USE (RFC 6154), UIDPLUS (RFC 4315), MOVE (RFC 6851), IDLE (RFC 2177), NAMESPACE (RFC 2342)
 - [x] SASL AUTHENTICATE (multi-step processing)
-- [ ] COMPRESS=DEFLATE (RFC 4978)
-- [ ] Concurrent mailbox change notifications across sessions
+- [x] COMPRESS=DEFLATE (RFC 4978) (landed 2026-05-05)
+- [x] Concurrent mailbox change notifications across sessions (completed 2026-05-05)
 
 ## POP3 Server ✅
 - [x] Full RFC 1939 implementation: USER/PASS, STAT, LIST, RETR, DELE, QUIT, RSET, NOOP, TOP, UIDL
 - [x] APOP (MD5 digest), STLS (STARTTLS, RFC 2595), CAPA
 
-## JMAP Server ✅ (auth integration incomplete)
+## JMAP Server ✅
 - [x] axum-based API server with session endpoint (`/.well-known/jmap`)
 - [x] Request validation, error responses (RFC 8620)
-- [x] Email: get/set/query/changes/copy/import/parse
-- [x] EmailSubmission, Mailbox (get/set/query/changes), Thread (get/changes)
-- [x] SearchSnippet/get, Identity/*, VacationResponse/*
-- [x] Blob download/upload, EventSource push (SSE)
-- [-] **Authentication**: Basic/Bearer hardcoded — needs real AuthBackend integration
-- [ ] Blob storage persistence (currently in-memory)
-- [ ] Back-reference resolution between method calls
+- [x] Email/set: create + update + destroy (RFC 8620 §5.1)
+- [x] Email: get/query/changes/copy/import/parse
+- [x] Identity/set: create + update + destroy (RFC 8620 §5.3), file-backed IdentityStore
+- [x] VacationResponse/set: create + update + destroy, file-backed VacationStore
+- [x] EmailSubmission/set: create + update + destroy (RFC 8620 §7), MailTransport abstraction
+- [x] Mailbox (get/set/query/changes), Thread (get/changes)
+- [x] SearchSnippet/get, Blob download/upload, EventSource push (SSE)
+- [x] RFC 5256 email threading (References-chain + subject fallback, SHA-256 thread IDs, per-mailbox .thread_index.json)
+- [x] **Bearer token authentication**: `AuthBackend::verify_bearer_token` (OAuth2 backend override)
+- [x] Blob storage persistence (currently in-memory)
+- [x] Back-reference resolution between method calls
+- [x] **JMAP correctness**: `EmailConversionContext`, `compute_blob_id` (SHA-256/RFC 8620), `jmap_keywords_from_flags` (RFC 8621 §4.1.1) — all placeholder values eliminated (landed 2026-05-06)
 
 ## Storage Backends ✅
 - [x] Filesystem (maildir) — flags, atomic delivery, subscriptions, quota (1,582 lines)
 - [x] PostgreSQL — connection pool, full-text search, quota, MODSEQ tracking (2,592 lines)
-- [-] AmateRS — **mock implementation** (no real distributed client)
+- [x] AmateRS — real client integration landed 2026-05-05 (`amaters-sdk-rust v0.2.0` wired; feature-gate `amaters-backend`; `AmatersBackend::connect_real` available)
 - [x] Storage metrics (Prometheus-compatible, 1,000 lines)
-- [ ] Directory locking for concurrent filesystem access
-- [ ] Database migration tooling (sqlx-migrate or refinery)
+- [x] Directory locking for concurrent filesystem access (landed 2026-05-05)
+- [x] Database migration tooling (sqlx migrate + SQLite backend) (landed 2026-05-05)
 
 ## Mailets ✅ (16 mailets)
 - [x] AddHeader, LocalDelivery, RemoteDelivery, Bounce, RemoveMimeHeader
@@ -83,38 +88,39 @@
 - [x] OxiFYMailet (AI analysis, 1,411 lines), LegalisMailet (legal archiving, 1,040 lines)
 - [x] DNSBL, Greylist
 
-## Authentication ✅ (server integration incomplete)
+## Authentication ✅
 - [x] `AuthBackend` trait with full user management
 - [x] File (bcrypt), LDAP (802 lines), SQL (1,154 lines), OAuth2/OIDC (1,469 lines), PAM
 - [x] SASL (1,495 lines): PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256, XOAUTH2
 - [x] Security: brute-force protection, password strength, audit logging, IP rate limiting (885 lines)
-- [-] **Server integration**: Only file-based works — LDAP/SQL/OAuth2 fall back to `DummyAuthBackend`
+- [x] **Server integration**: `AuthBackendKind` config-driven factory; LDAP/SQL/OAuth2 no longer fall back to `DummyAuthBackend` (landed 2026-05-05)
 
-## Search ✅ (minimal)
+## Search ✅
 - [x] `SearchIndex` trait + `TantivySearchIndex` (index, delete, search, commit)
-- [ ] HTML-to-text conversion, attachment filename indexing
-- [ ] Background reindex worker, result caching, `rebuild()`
+- [x] HTML-to-text conversion, attachment filename indexing
+- [x] Background reindex worker, result caching, `rebuild()` (landed 2026-05-03)
 
 ## Configuration ✅
 - [x] TOML/YAML auto-detect, 30+ `RUSMES_*` env overrides, validation, hot-reload (SIGHUP)
 - [x] All sections: SMTP, IMAP, JMAP, POP3, Storage, Auth, Queue, Security, Metrics, Tracing, Connections
-- [ ] `[performance]` section, per-protocol TLS paths, unknown key warnings
+- [x] `[performance]` section, per-protocol TLS paths, unknown key warnings
 
 ## CLI ✅
 - [x] clap-based: init, start, stop, user, mailbox, queue, metrics, check-config, status
 - [x] backup (1,099 lines), restore (943 lines), migrate (1,217 lines)
-- [-] `status` and `migrate` commands — partially placeholder
-- [ ] Colored output, `--json` mode, shell completions, man pages
+- [x] `status` and `migrate` commands — fully implemented (landed 2026-05-05)
+- [x] Colored output, `--json` mode, shell completions, man pages (landed 2026-05-05)
 
 ## Observability ✅
-- [x] Prometheus metrics + histograms, HTTP `/metrics` endpoint
+- [x] Prometheus metrics + histograms, HTTP `/metrics` endpoint on port 9090
+- [x] Active connections gauge per protocol (RAII `ConnectionGuard` via `Arc<AtomicI64>`)
 - [x] OpenTelemetry tracing (OTLP gRPC/HTTP)
 - [x] Structured logging with session UUID, health/ready/live endpoints
 - [x] Grafana dashboard (16 panels)
 
-## ACME / TLS [-] (partial)
+## ACME / TLS ✅
 - [x] ACME v2 client, auto-renewal, HTTP-01/DNS-01 challenges, cert/CSR generation
-- [-] **JWK thumbprint**: placeholder values — blocks real Let's Encrypt issuance
+- [x] **JWK thumbprint**: RFC 7638 SHA-256 thumbprint implemented (landed 2026-05-03)
 
 ## Deployment ✅
 - [x] Dockerfile (multi-stage), docker-compose (RusMES + PostgreSQL + Prometheus + Grafana)
@@ -122,7 +128,7 @@
 - [x] Graceful shutdown, signal handling
 
 ## Testing & Quality ✅
-- [x] 1,602+ unit tests, integration tests, RFC compliance tests
+- [x] 2,309 unit tests passing (60 skipped), integration tests, RFC compliance tests
 - [x] Fuzz testing (5 targets), load testing, performance benchmarks
 - [x] NO WARNINGS POLICY (0 warnings)
 
@@ -130,24 +136,25 @@
 
 ## 🔧 Known Issues & Remaining Work
 
-### Critical (blocks production use)
-1. **Auth backend integration** — `rusmes-server` falls back to `DummyAuthBackend` for LDAP/SQL/OAuth2
-2. **JMAP authentication** — Hardcoded dev-only auth, needs `AuthBackend` integration
-3. **ACME JWK thumbprint** — Placeholder values prevent real certificate issuance
+### Critical (resolved)
+1. ~~**Auth backend integration**~~ — ✅ `AuthBackendKind` factory wired; no DummyAuthBackend fallback
+2. ~~**JMAP authentication**~~ — ✅ Bearer token + Basic auth via real `AuthBackend` (landed 2026-05-03)
+3. ~~**ACME JWK thumbprint**~~ — ✅ RFC 7638 SHA-256 thumbprint implemented (landed 2026-05-03)
 
-### Important
-4. **AmateRS backend** — Mock implementation only
-5. **SMTP SCRAM-SHA-256** — Placeholder salt/iteration values
-6. **JMAP blob storage** — In-memory only, no persistence
-7. **JMAP back-references** — Not implemented
+### Still Open
+4. [x] **AmateRS backend** — real client integration landed 2026-05-05 (`amaters-sdk-rust v0.2.0` wired; feature-gate `amaters-backend`)
+5. ~~**SMTP SCRAM-SHA-256**~~ — ✅ Real salt/iteration count via AuthBackend (landed 2026-05-03)
+6. ~~**JMAP blob storage**~~ — ✅ Filesystem-backed BlobStorage with persistence (landed 2026-05-05)
+7. ~~**JMAP back-references**~~ — ✅ RFC 8620 §3.7 back-reference resolution implemented (landed 2026-05-05)
 
 ### Nice-to-have
-8. IMAP COMPRESS=DEFLATE, concurrent mailbox notifications
-9. Filesystem directory locking, DB migration tooling
-10. Search enhancements (HTML extraction, indexing, caching, reindex)
-11. Config `[performance]` section, per-protocol TLS, unknown key warnings
-12. CLI colored output, `--json`, shell completions, man pages
-13. Metrics endpoint basic auth
+8. ~~IMAP COMPRESS=DEFLATE~~ — ✅ `oxiarc-deflate 0.2.7` async streaming adapter + session stream-swap landed 2026-05-05
+9. ~~Filesystem directory locking~~, ~~DB migration tooling~~ — ✅ both landed 2026-05-05
+10. ~~Search enhancements~~ (HTML extraction, indexing, caching, reindex) — ✅ all landed 2026-05-03/05
+11. ~~Config `[performance]` section, per-protocol TLS, unknown key warnings~~ — ✅ landed 2026-05-05
+12. ~~CLI colored output, `--json`, shell completions, man pages~~ — ✅ landed 2026-05-05
+13. ~~Metrics endpoint basic auth~~ — ✅ landed 2026-05-03
+14. ~~Server privilege drop (setuid/chroot)~~ — ✅ `PrivilegeDrop` with chroot+setgid+setuid (Linux-only); `[server] run_as_user/run_as_group/chroot` config fields landed 2026-05-06
 
 ---
 
@@ -155,9 +162,9 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Lines of Code | ~87,579 Rust lines (71,926 code lines) |
+| Total Lines of Code | 112,187 Rust lines (92,215 code lines, 324 files) |
 | Crates | 17 |
-| Unit Tests | 1,942 (100% passing) |
+| Unit Tests | 2,309 (100% passing, 60 skipped) |
 | Warnings | 0 |
 | Protocols | SMTP, IMAP, POP3, JMAP |
 | Auth Backends | 5 (File, LDAP, SQL, OAuth2, PAM) |
@@ -168,3 +175,5 @@
 | SMTP Extensions | 8 |
 | IMAP Extensions | 9 |
 | POP3 Extensions | 4 |
+
+## Last updated: 2026-05-09

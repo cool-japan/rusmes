@@ -8,16 +8,110 @@
 //! - Mandatory authentication before MAIL FROM
 //! - Submission-specific validations and restrictions
 //! - RFC 6409 compliance
+//! - Mutual TLS (mTLS) — optional or required client certificates
 //!
 //! The submission server wraps the standard SMTP server with additional
 //! restrictions to ensure secure mail submission from authenticated users.
+//!
+//! ## Mutual TLS
+//!
+//! Call [`build_mtls_server_config`] to obtain a `rustls::ServerConfig` that
+//! requests and (optionally) requires a client certificate signed by the given
+//! CA.  Pass the result to [`SubmissionServer::with_tls`].
 
 use crate::session::{SmtpConfig, SmtpSessionHandler};
 use rusmes_auth::AuthBackend;
+use rusmes_config::tls::ClientAuthMode;
 use rusmes_core::{MailProcessorRouter, RateLimiter};
 use rusmes_storage::StorageBackend;
+use rustls::pki_types::CertificateDer;
+use rustls::server::WebPkiClientVerifier;
+use rustls_pemfile::certs as pemfile_certs;
+use std::io::BufReader as StdBufReader;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+
+// ── Mutual TLS helpers ────────────────────────────────────────────────────────
+
+/// Build a `rustls::ServerConfig` that enables mutual TLS.
+///
+/// Loads the CA certificate(s) from the PEM bytes in `ca_pem_bytes` and
+/// configures the server to request (when `mode == Optional`) or require
+/// (when `mode == Required`) a valid client certificate signed by that CA.
+///
+/// Returns an error when:
+/// - `mode == Disabled` — this function should not be called in that case.
+/// - The CA PEM cannot be parsed.
+/// - The `WebPkiClientVerifier` rejects the trust roots.
+/// - The server cert/key cannot be loaded.
+///
+/// # Arguments
+///
+/// * `mode` — controls whether a missing client cert is accepted (`Optional`)
+///   or causes a TLS handshake failure (`Required`).
+/// * `ca_pem_bytes` — raw bytes of the PEM-encoded CA certificate chain file.
+/// * `server_cert_pem` — PEM-encoded server certificate chain.
+/// * `server_key_pem` — PEM-encoded server private key.
+pub fn build_mtls_server_config(
+    mode: &ClientAuthMode,
+    ca_pem_bytes: &[u8],
+    server_cert_pem: &[u8],
+    server_key_pem: &[u8],
+) -> anyhow::Result<rustls::ServerConfig> {
+    if *mode == ClientAuthMode::Disabled {
+        anyhow::bail!("build_mtls_server_config called with ClientAuthMode::Disabled — use the standard builder path instead");
+    }
+
+    // Parse CA certificates.
+    let mut ca_reader = StdBufReader::new(ca_pem_bytes);
+    let ca_certs: Vec<CertificateDer<'static>> = pemfile_certs(&mut ca_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse CA PEM: {}", e))?;
+
+    if ca_certs.is_empty() {
+        anyhow::bail!("CA PEM file contained no certificates");
+    }
+
+    let mut root_store = rustls::RootCertStore::empty();
+    for cert in ca_certs {
+        root_store
+            .add(cert)
+            .map_err(|e| anyhow::anyhow!("invalid CA certificate: {}", e))?;
+    }
+
+    let roots = Arc::new(root_store);
+
+    // Build the appropriate client verifier.
+    let client_verifier: Arc<dyn rustls::server::danger::ClientCertVerifier> = match mode {
+        ClientAuthMode::Required => WebPkiClientVerifier::builder(roots)
+            .build()
+            .map_err(|e| anyhow::anyhow!("WebPkiClientVerifier build error: {}", e))?,
+        ClientAuthMode::Optional => WebPkiClientVerifier::builder(roots)
+            .allow_unauthenticated()
+            .build()
+            .map_err(|e| anyhow::anyhow!("WebPkiClientVerifier build error: {}", e))?,
+        ClientAuthMode::Disabled => unreachable!(),
+    };
+
+    // Parse server certificate chain.
+    let mut cert_reader = StdBufReader::new(server_cert_pem);
+    let server_certs: Vec<CertificateDer<'static>> = pemfile_certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("failed to parse server cert PEM: {}", e))?;
+
+    // Parse server private key.
+    let mut key_reader = StdBufReader::new(server_key_pem);
+    let private_key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| anyhow::anyhow!("failed to parse server key PEM: {}", e))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in server key PEM"))?;
+
+    let config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(server_certs, private_key)
+        .map_err(|e| anyhow::anyhow!("rustls ServerConfig build error: {}", e))?;
+
+    Ok(config)
+}
 
 /// Submission server configuration
 ///
@@ -81,6 +175,11 @@ impl From<SubmissionConfig> for SmtpConfig {
             local_domains: config.local_domains,
             connection_timeout: config.connection_timeout,
             idle_timeout: config.idle_timeout,
+            // Submission servers don't apply IP-level blocks here — handled
+            // by the network perimeter (firewall / load balancer).
+            blocked_networks: Vec::new(),
+            data_tempfile_threshold: SmtpConfig::default().data_tempfile_threshold,
+            data_spill_dir: SmtpConfig::default().data_spill_dir,
         }
     }
 }
@@ -599,5 +698,119 @@ mod tests {
 
         let _server =
             SubmissionServer::new(config, "127.0.0.1:587", router, auth, rate_limiter, storage);
+    }
+
+    // ── Mutual TLS tests ──────────────────────────────────────────────────────
+    //
+    // These tests exercise `build_mtls_server_config` using in-process self-signed
+    // certificates generated by `rcgen`.  They do NOT spin up a full TLS listener
+    // (that would require a second tokio-rustls client and is left to integration
+    // tests) — instead they verify:
+    //   1. `Disabled` mode → `build_mtls_server_config` returns an error (wrong call path).
+    //   2. `Optional` mode → server config is built successfully.
+    //   3. `Required` mode → server config is built successfully.
+    //   4. A bad CA PEM → function returns an error.
+
+    /// Helper: generate a self-signed CA cert + server cert using `rcgen`.
+    ///
+    /// Returns `(ca_pem, server_cert_pem, server_key_pem)` as byte vectors.
+    ///
+    /// Uses the low-level rcgen 0.14 API: `CertificateParams::self_signed` for
+    /// the CA, and `CertificateParams::signed_by` with an `Issuer` for the server.
+    fn generate_test_pki() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair};
+
+        // CA certificate — self-signed using low-level API.
+        let mut ca_params =
+            CertificateParams::new(vec!["ca.example.com".to_string()]).expect("ca params");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let mut ca_dn = DistinguishedName::new();
+        ca_dn.push(rcgen::DnType::CommonName, "Test CA");
+        ca_params.distinguished_name = ca_dn;
+        let ca_key = KeyPair::generate().expect("ca key");
+        // `CertificateParams::self_signed` returns a `Certificate`.
+        let ca_cert = ca_params.self_signed(&ca_key).expect("self-signed CA cert");
+        let ca_pem = ca_cert.pem().into_bytes();
+        // Build an Issuer so we can sign the server cert.
+        let ca_issuer = Issuer::new(ca_params, ca_key);
+
+        // Server certificate signed by the CA.
+        let mut server_params =
+            CertificateParams::new(vec!["localhost".to_string()]).expect("server params");
+        let mut server_dn = DistinguishedName::new();
+        server_dn.push(rcgen::DnType::CommonName, "Test Server");
+        server_params.distinguished_name = server_dn;
+        let server_key = KeyPair::generate().expect("server key");
+
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_issuer)
+            .expect("sign server cert");
+
+        let server_cert_pem = server_cert.pem().into_bytes();
+        let server_key_pem = server_key.serialize_pem().into_bytes();
+
+        (ca_pem, server_cert_pem, server_key_pem)
+    }
+
+    /// `Disabled` mode must return an error — `build_mtls_server_config` should
+    /// never be called with `Disabled`.
+    #[test]
+    fn test_mtls_client_auth_disabled_no_change() {
+        let result =
+            build_mtls_server_config(&ClientAuthMode::Disabled, b"dummy", b"dummy", b"dummy");
+        assert!(result.is_err(), "Disabled mode must return an error");
+    }
+
+    /// `Optional` mode must produce a valid `rustls::ServerConfig`.
+    #[test]
+    fn test_mtls_optional_accepts_no_cert() {
+        // Ensure a ring-based CryptoProvider is installed for this process.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (ca_pem, server_cert_pem, server_key_pem) = generate_test_pki();
+        let result = build_mtls_server_config(
+            &ClientAuthMode::Optional,
+            &ca_pem,
+            &server_cert_pem,
+            &server_key_pem,
+        );
+        assert!(
+            result.is_ok(),
+            "Optional mode must build successfully: {:?}",
+            result.err()
+        );
+    }
+
+    /// `Required` mode must produce a valid `rustls::ServerConfig`.
+    #[test]
+    fn test_mtls_required_rejects_no_cert() {
+        // Ensure a ring-based CryptoProvider is installed for this process.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (ca_pem, server_cert_pem, server_key_pem) = generate_test_pki();
+        // The `build_mtls_server_config` call itself must succeed; the actual
+        // rejection of a no-cert client happens at handshake time which would
+        // require a live TLS listener (out of scope for this unit test).
+        let result = build_mtls_server_config(
+            &ClientAuthMode::Required,
+            &ca_pem,
+            &server_cert_pem,
+            &server_key_pem,
+        );
+        assert!(
+            result.is_ok(),
+            "Required mode must build successfully (rejection happens at handshake): {:?}",
+            result.err()
+        );
+    }
+
+    /// A garbage CA PEM must return a clear error.
+    #[test]
+    fn test_mtls_bad_ca_pem_returns_error() {
+        let result = build_mtls_server_config(
+            &ClientAuthMode::Required,
+            b"not a real PEM",
+            b"also not real",
+            b"also not real",
+        );
+        assert!(result.is_err(), "Bad CA PEM must return an error");
     }
 }

@@ -7,4 +7,10 @@ ignore = [
     "RUSTSEC-2025-0017",  # trust-dns-proto unmaintained - migrated to hickory-resolver
     "RUSTSEC-2026-0002",  # lru unsound - transitive via tantivy/ratatui/aws-sdk-s3; awaiting upstream fix
     "RUSTSEC-2026-0049",  # rustls-webpki 0.101.7 CRL matching bug - transitive via aws-smithy-http-client → rustls 0.21 → rustls-webpki 0.101.7; aws-smithy-http-client 1.1.12 is latest and still uses rustls 0.21; awaiting upstream AWS SDK migration to rustls 0.22+
+    "RUSTSEC-2026-0118",  # hickory-proto 0.25.x NSEC3 unbounded loop on cross-zone responses - hickory 0.26 has breaking API changes (Lookup::iter removed, builder API changed); awaiting API-compatible fix or upstream migration path
+    "RUSTSEC-2026-0119",  # hickory-proto 0.25.x CPU exhaustion O(n²) name compression - same root cause as 0118; awaiting hickory 0.26 API-compatible migration
+    "RUSTSEC-2026-0104",  # rustls-webpki 0.101.x and 0.103.x reachable panic in CRL parsing - transitive via aws-smithy-http-client → rustls 0.21 → rustls-webpki 0.101.x; awaiting AWS SDK upgrade
+    "RUSTSEC-2026-0098",  # rustls-webpki 0.101.x and 0.103.x URI name constraints incorrectly accepted - transitive via aws-smithy-http-client; awaiting AWS SDK upgrade
+    "RUSTSEC-2026-0099",  # rustls-webpki 0.101.x and 0.103.x wildcard name constraints incorrectly accepted - transitive via aws-smithy-http-client; awaiting AWS SDK upgrade
+    "RUSTSEC-2025-0141",  # bincode 1.3.3 unmaintained - transitive via optional amaters-backend feature (tfhe → tfhe-safe-serialize → bincode); AmateRS code does not use bincode directly; disabled by default
 ]

@@ -1,18 +1,28 @@
 //! RusMES server main binary
+//!
+//! Entry point for the `rusmes-server` orchestrator. Parses CLI arguments,
+//! loads + validates configuration, optionally exits early for `--check-config`,
+//! constructs the authentication and storage backends via the `bootstrap`
+//! module, and then spawns each enabled protocol server (SMTP, IMAP, JMAP,
+//! POP3) under a unified signal-handling loop.
 
 mod connection_limits;
+mod privileges;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use clap::Parser;
 use rusmes_config::ServerConfig;
 use rusmes_core::factory::{create_mailet_with_storage, create_matcher};
 use rusmes_core::{MailProcessorRouter, ProcessingStep, Processor, RateLimitConfig, RateLimiter};
-use rusmes_metrics::MetricsCollector;
+use rusmes_metrics::{set_global_metrics, MetricsCollector};
 use rusmes_pop3::{Pop3Config, Pop3Server};
 use rusmes_proto::MailState;
+use rusmes_server::bootstrap::{
+    build_auth_backend, build_storage_backend, load_and_validate, PidFile,
+};
+use rusmes_server::cli::Cli;
 use rusmes_smtp::{SmtpConfig, SmtpServer};
-use rusmes_storage::backends::filesystem::FilesystemBackend;
 use rusmes_storage::StorageBackend;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -187,8 +197,9 @@ async fn apply_hot_reloadable_changes(new_config: &ServerConfig, rate_limiter: A
 
         let new_rate_config = RateLimitConfig {
             max_connections_per_ip: rate_limit.max_connections_per_ip,
-            max_messages_per_hour: rate_limit.max_messages_per_hour as usize,
+            max_messages_per_window: rate_limit.max_messages_per_hour as usize,
             window_duration: std::time::Duration::from_secs(window_secs),
+            ..Default::default()
         };
 
         rate_limiter.update_config(new_rate_config).await;
@@ -224,98 +235,6 @@ fn update_logging_level(level: &str) -> Result<()> {
     }
 }
 
-/// Dummy auth backend for testing (accepts all credentials)
-/// WARNING: This is insecure and should only be used for testing!
-struct DummyAuthBackend;
-
-#[async_trait::async_trait]
-impl rusmes_auth::AuthBackend for DummyAuthBackend {
-    async fn authenticate(
-        &self,
-        _username: &rusmes_proto::Username,
-        _password: &str,
-    ) -> Result<bool> {
-        Ok(true) // Accept all for now
-    }
-
-    async fn verify_identity(&self, _username: &rusmes_proto::Username) -> Result<bool> {
-        Ok(true) // Accept all for now
-    }
-
-    async fn list_users(&self) -> Result<Vec<rusmes_proto::Username>> {
-        Ok(Vec::new()) // No users in dummy backend
-    }
-
-    async fn create_user(&self, _username: &rusmes_proto::Username, _password: &str) -> Result<()> {
-        Ok(()) // No-op in dummy backend
-    }
-
-    async fn delete_user(&self, _username: &rusmes_proto::Username) -> Result<()> {
-        Ok(()) // No-op in dummy backend
-    }
-
-    async fn change_password(
-        &self,
-        _username: &rusmes_proto::Username,
-        _new_password: &str,
-    ) -> Result<()> {
-        Ok(()) // No-op in dummy backend
-    }
-
-    async fn get_apop_secret(&self, _username: &rusmes_proto::Username) -> Result<String> {
-        // For testing, return a fixed secret
-        // In production, this should retrieve the actual password from storage
-        Ok("password".to_string())
-    }
-}
-
-/// Create authentication backend based on configuration
-async fn create_auth_backend(config: &ServerConfig) -> Result<Arc<dyn rusmes_auth::AuthBackend>> {
-    match &config.auth {
-        Some(rusmes_config::AuthConfig::File {
-            config: file_config,
-        }) => {
-            tracing::info!(
-                "Using FileAuthBackend with password file: {}",
-                file_config.path
-            );
-            let backend = rusmes_auth::file::FileAuthBackend::new(&file_config.path).await?;
-            Ok(Arc::new(backend))
-        }
-        Some(rusmes_config::AuthConfig::Ldap {
-            config: _ldap_config,
-        }) => {
-            tracing::warn!(
-                "LDAP authentication not yet implemented, falling back to DummyAuthBackend"
-            );
-            Ok(Arc::new(DummyAuthBackend))
-        }
-        Some(rusmes_config::AuthConfig::Sql {
-            config: _sql_config,
-        }) => {
-            tracing::warn!(
-                "SQL authentication not yet implemented, falling back to DummyAuthBackend"
-            );
-            Ok(Arc::new(DummyAuthBackend))
-        }
-        Some(rusmes_config::AuthConfig::OAuth2 {
-            config: _oauth_config,
-        }) => {
-            tracing::warn!(
-                "OAuth2 authentication not yet implemented, falling back to DummyAuthBackend"
-            );
-            Ok(Arc::new(DummyAuthBackend))
-        }
-        None => {
-            tracing::warn!("No authentication backend configured, using DummyAuthBackend (accepts all credentials)");
-            tracing::warn!(
-                "WARNING: DummyAuthBackend is insecure and should only be used for testing!"
-            );
-            Ok(Arc::new(DummyAuthBackend))
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
@@ -323,45 +242,59 @@ async fn main() -> Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
+    let cli = Cli::parse();
+    let (config_path, used_positional_fallback) = cli.resolve_config_path();
+    if used_positional_fallback {
+        eprintln!(
+            "warning: passing the config path as a positional argument is deprecated; \
+             use `-c {}` instead. The positional fallback will be removed in the next release.",
+            config_path.display()
+        );
+    }
+
+    if cli.check_config {
+        return run_check_config(&config_path);
+    }
+
     tracing::info!("Starting RusMES server...");
 
-    // Load configuration
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "rusmes.toml".to_string());
+    // Load + validate the configuration. We deliberately do NOT fall back to a
+    // synthesized default — the bootstrap path needs an explicit storage and
+    // (optionally) auth section. Operators that previously relied on the
+    // implicit default should now ship a `rusmes.toml`.
+    let config = load_and_validate(&config_path).with_context(|| {
+        format!(
+            "failed to load configuration from {}",
+            config_path.display()
+        )
+    })?;
 
-    let config = match ServerConfig::from_file(&config_path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::warn!("Could not load config file '{}': {}", config_path, e);
-            tracing::info!("Using default configuration");
-            create_default_config()
-        }
-    };
+    let config_path_str = config_path.to_string_lossy().to_string();
 
     tracing::info!("Server domain: {}", config.domain);
     tracing::info!("Postmaster: {}", config.postmaster);
+    tracing::info!("Runtime dir: {}", config.runtime_dir);
 
-    // Initialize storage backend
-    let storage: Arc<dyn StorageBackend> = match &config.storage {
-        rusmes_config::StorageConfig::Filesystem { path } => {
-            tracing::info!("Using filesystem storage at: {}", path);
-            Arc::new(FilesystemBackend::new(path))
-        }
-        _ => {
-            tracing::warn!("Storage backend not implemented, using default");
-            Arc::new(FilesystemBackend::new("/tmp/rusmes"))
-        }
-    };
+    // Write the PID file before opening any sockets so external supervisors
+    // can attach immediately.
+    let pid_file = PidFile::write(&config.runtime_dir).await?;
+
+    // Initialize storage backend via the cluster-3 factory.
+    let storage: Arc<dyn StorageBackend> = build_storage_backend(&config.storage).await?;
 
     // Initialize metrics
     let metrics = Arc::new(MetricsCollector::new());
+    // Register the global handle so protocol handlers (SMTP, IMAP, POP3) write
+    // into the same instance that the HTTP scrape endpoint reads from.
+    if let Err(e) = set_global_metrics((*metrics).clone()) {
+        tracing::warn!("Global metrics already initialized: {}", e);
+    }
 
     // Build processor router
     let router = build_processor_router(&config, metrics.clone(), storage.clone()).await?;
 
-    // Initialize authentication backend
-    let auth_backend = create_auth_backend(&config).await?;
+    // Initialize authentication backend via the cluster-1A factory.
+    let auth_backend = build_auth_backend(&config).await?;
 
     // Initialize rate limiter (wrapped in RwLock for hot-reload)
     let rate_limit_config = if let Some(rl_config) = &config.smtp.rate_limit {
@@ -371,16 +304,59 @@ async fn main() -> Result<()> {
         });
         RateLimitConfig {
             max_connections_per_ip: rl_config.max_connections_per_ip,
-            max_messages_per_hour: rl_config.max_messages_per_hour as usize,
+            max_messages_per_window: rl_config.max_messages_per_hour as usize,
             window_duration: std::time::Duration::from_secs(window_secs),
+            runtime_dir: Some(std::path::PathBuf::from(&config.runtime_dir)),
+            ..Default::default()
         }
     } else {
-        RateLimitConfig::default()
+        RateLimitConfig {
+            runtime_dir: Some(std::path::PathBuf::from(&config.runtime_dir)),
+            ..Default::default()
+        }
     };
+    // Capture persistence settings before moving config into the limiter.
+    let persist_settings = rate_limit_config
+        .runtime_dir
+        .clone()
+        .map(|dir| (dir, rate_limit_config.persist_interval_secs.unwrap_or(60)));
     let rate_limiter = Arc::new(RateLimiter::new(rate_limit_config));
+
+    // Spawn the periodic snapshot task only when a runtime_dir is configured.
+    if let Some((dir, interval_secs)) = persist_settings {
+        rate_limiter.start_persistence_task(dir, std::time::Duration::from_secs(interval_secs));
+    }
 
     // Wrap config in RwLock for hot-reload
     let current_config = Arc::new(RwLock::new(config.clone()));
+
+    // -------------------------------------------------------------------------
+    // Privilege drop: resolve targets from config and apply before spawning.
+    //
+    // ORDERING CAVEAT: The current architecture binds all listener sockets
+    // *inside* tokio::spawn closures (i.e., after this point).  This means
+    // that when `run_as_user`, `run_as_group`, or `chroot` are set, privileged
+    // ports (<1024) will fail to bind after the privilege drop has taken effect.
+    // Operators using these fields must either:
+    //   (a) bind to non-privileged ports (≥1024) and use a port-forwarding
+    //       rule (nftables REDIRECT, iptables REDIRECT, CAP_NET_BIND_SERVICE),
+    //   (b) wait for the planned listener-pre-bind refactor that hoists all
+    //       TcpListener::bind calls above the first tokio::spawn.
+    // Tracked in crates/rusmes-server/TODO.md.
+    // -------------------------------------------------------------------------
+    let _uid = privileges::resolve_uid(&config.run_as_user)?;
+    let _gid = privileges::resolve_gid(&config.run_as_group)?;
+    let _chroot_dir = if config.chroot {
+        Some(std::path::PathBuf::from(&config.runtime_dir))
+    } else {
+        None
+    };
+    let privilege_drop = privileges::PrivilegeDrop {
+        chroot_dir: _chroot_dir,
+        uid: _uid,
+        gid: _gid,
+    };
+    privilege_drop.apply()?;
 
     // Spawn SMTP server
     let smtp_config = SmtpConfig {
@@ -410,6 +386,24 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| vec![config.domain.clone()]),
         connection_timeout: std::time::Duration::from_secs(300),
         idle_timeout: std::time::Duration::from_secs(60),
+        blocked_networks: config
+            .security
+            .as_ref()
+            .map(|s| {
+                s.blocked_ips
+                    .iter()
+                    .filter_map(|cidr| {
+                        cidr.parse::<ipnetwork::IpNetwork>()
+                            .map_err(|e| {
+                                tracing::warn!(cidr = %cidr, error = %e, "skipping unparseable blocked_ip entry");
+                            })
+                            .ok()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        data_tempfile_threshold: SmtpConfig::default().data_tempfile_threshold,
+        data_spill_dir: SmtpConfig::default().data_spill_dir,
     };
 
     let smtp_bind = format!("{}:{}", config.smtp.host, config.smtp.port);
@@ -496,12 +490,31 @@ async fn main() -> Result<()> {
                 greeting: "POP3 server ready".to_string(),
                 timeout_seconds: pop3_timeout,
                 enable_stls: pop3_enable_stls,
+                ..Pop3Config::default()
             };
             let server = Pop3Server::new(pop3_bind, pop3_cfg, pop3_auth, pop3_storage);
             if let Err(e) = server.start().await {
                 tracing::error!("POP3 server error: {}", e);
             }
         }))
+    } else {
+        None
+    };
+
+    // Spawn metrics HTTP server if configured
+    let mut metrics_handle = if let Some(ref metrics_config) = config.metrics {
+        if metrics_config.enabled {
+            let mc = metrics_config.clone();
+            let metrics_clone = (*metrics).clone();
+            tracing::info!("Starting metrics HTTP server on {}", mc.bind_address);
+            Some(tokio::spawn(async move {
+                if let Err(e) = metrics_clone.start_http_server(mc).await {
+                    tracing::error!("Metrics HTTP server error: {}", e);
+                }
+            }))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -529,7 +542,7 @@ async fn main() -> Result<()> {
                 }
                 _ = sighup.recv() => {
                     tracing::info!("Received SIGHUP, reloading configuration...");
-                    handle_config_reload(&config_path, current_config.clone(), rate_limiter.clone()).await;
+                    handle_config_reload(&config_path_str, current_config.clone(), rate_limiter.clone()).await;
                 }
                 _ = &mut smtp_handle => {
                     tracing::error!("SMTP server exited unexpectedly");
@@ -566,6 +579,17 @@ async fn main() -> Result<()> {
                     }
                 } => {
                     tracing::error!("POP3 server exited unexpectedly");
+                    break;
+                }
+                _ = async {
+                    if let Some(ref mut handle) = metrics_handle {
+                        handle.await
+                    } else {
+                        std::future::pending::<()>().await;
+                        Ok(())
+                    }
+                } => {
+                    tracing::error!("Metrics HTTP server exited unexpectedly");
                     break;
                 }
             }
@@ -622,12 +646,58 @@ async fn main() -> Result<()> {
                     tracing::error!("POP3 server exited unexpectedly");
                     break;
                 }
+                _ = async {
+                    if let Some(ref mut handle) = metrics_handle {
+                        handle.await
+                    } else {
+                        std::future::pending::<()>().await;
+                        Ok(())
+                    }
+                } => {
+                    tracing::error!("Metrics HTTP server exited unexpectedly");
+                    break;
+                }
             }
         }
     }
 
+    pid_file.cleanup().await;
+
     tracing::info!("RusMES server shutdown complete");
     Ok(())
+}
+
+/// Implementation of the `--check-config` flag: load + validate, print a
+/// human-readable summary, exit 0 / 1 accordingly.
+fn run_check_config(config_path: &std::path::Path) -> Result<()> {
+    match load_and_validate(config_path) {
+        Ok(cfg) => {
+            eprintln!(
+                "Configuration at {} OK: domain={}, storage={:?}, auth={}",
+                config_path.display(),
+                cfg.domain,
+                cfg.storage,
+                cfg.auth
+                    .as_ref()
+                    .map(|c| match c {
+                        rusmes_config::AuthConfig::File { .. } => "file",
+                        rusmes_config::AuthConfig::Sql { .. } => "sql",
+                        rusmes_config::AuthConfig::Ldap { .. } => "ldap",
+                        rusmes_config::AuthConfig::OAuth2 { .. } => "oauth2",
+                    })
+                    .unwrap_or("(unconfigured — file backend default applies)"),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!(
+                "Configuration at {} INVALID: {:#}",
+                config_path.display(),
+                e
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Build the mail processor router from configuration
@@ -676,6 +746,8 @@ async fn build_processor_router(
             let mailet_cfg = rusmes_core::MailetConfig {
                 name: mailet_config.mailet.clone(),
                 params,
+                timeout_ms: None,
+                error_policy: rusmes_core::MailetErrorPolicy::default(),
             };
 
             let mailet = create_mailet_with_storage(
@@ -703,46 +775,5 @@ fn parse_mail_state(s: &str) -> Result<MailState> {
         "error" => Ok(MailState::Error),
         "ghost" => Ok(MailState::Ghost),
         _ => Ok(MailState::Custom(s.to_string())),
-    }
-}
-
-/// Create default configuration
-fn create_default_config() -> ServerConfig {
-    ServerConfig {
-        domain: "localhost".to_string(),
-        postmaster: "postmaster@localhost".to_string(),
-        smtp: rusmes_config::SmtpServerConfig {
-            host: "0.0.0.0".to_string(),
-            port: 2525,
-            tls_port: None,
-            max_message_size: "10MB".to_string(),
-            require_auth: false,
-            enable_starttls: false,
-            rate_limit: None,
-        },
-        imap: None,
-        jmap: None,
-        pop3: None,
-        storage: rusmes_config::StorageConfig::Filesystem {
-            path: "/tmp/rusmes".to_string(),
-        },
-        processors: vec![rusmes_config::ProcessorConfig {
-            name: "root".to_string(),
-            state: "root".to_string(),
-            mailets: vec![rusmes_config::MailetConfig {
-                matcher: "All".to_string(),
-                mailet: "LocalDelivery".to_string(),
-                params: HashMap::new(),
-            }],
-        }],
-        relay: None,
-        auth: None,
-        logging: None,
-        queue: None,
-        security: None,
-        domains: None,
-        metrics: None,
-        tracing: None,
-        connection_limits: None,
     }
 }

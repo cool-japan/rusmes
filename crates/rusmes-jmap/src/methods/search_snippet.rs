@@ -3,6 +3,8 @@
 //! Implements:
 //! - SearchSnippet/get - search result preview snippets with highlighting
 
+use crate::methods::ensure_account_ownership;
+use crate::types::Principal;
 use rusmes_storage::MessageStore;
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +47,9 @@ pub struct SearchSnippetGetResponse {
 pub async fn search_snippet_get(
     request: SearchSnippetGetRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<SearchSnippetGetResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let mut list = Vec::new();
     let mut not_found = Vec::new();
 
@@ -214,6 +218,11 @@ pub fn highlight_snippet(text: &str, search_terms: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn test_principal() -> crate::types::Principal {
+        crate::types::admin_principal_for_tests()
+    }
+
     use super::*;
     use rusmes_storage::backends::filesystem::FilesystemBackend;
     use rusmes_storage::StorageBackend;
@@ -233,7 +242,9 @@ mod tests {
             filter: None,
         };
 
-        let response = search_snippet_get(request, store.as_ref()).await.unwrap();
+        let response = search_snippet_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.account_id, "acc1");
         assert_eq!(response.list.len(), 1);
     }
@@ -251,7 +262,9 @@ mod tests {
             filter: None,
         };
 
-        let response = search_snippet_get(request, store.as_ref()).await.unwrap();
+        let response = search_snippet_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 3);
     }
 
@@ -287,7 +300,9 @@ mod tests {
             filter: Some(filter),
         };
 
-        let response = search_snippet_get(request, store.as_ref()).await.unwrap();
+        let response = search_snippet_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.account_id, "acc1");
     }
 
@@ -300,7 +315,9 @@ mod tests {
             filter: None,
         };
 
-        let response = search_snippet_get(request, store.as_ref()).await.unwrap();
+        let response = search_snippet_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 0);
         assert_eq!(response.not_found.len(), 0);
     }

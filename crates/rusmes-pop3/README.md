@@ -26,3 +26,11 @@ Pop3Server
 - `nom` - command parsing
 - `rustls` / `tokio-rustls` - TLS
 - `tokio` - async networking
+
+## Tests
+
+```bash
+cargo test -p rusmes-pop3   # 44 tests
+```
+
+Tests cover: maildrop locking (RAII), SASL AUTH mechanisms (PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256), session state transitions, and integration tests for concurrent access prevention.

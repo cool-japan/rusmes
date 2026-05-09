@@ -33,6 +33,14 @@ pub enum Pop3Command {
     Capa,
     /// STLS - start TLS (STARTTLS)
     Stls,
+    /// AUTH \[mechanism \[initial-response\]\] - SASL authentication (RFC 1734 / RFC 5034)
+    ///
+    /// `mechanism = None` requests the SASL mechanism listing (some clients
+    /// issue a bare `AUTH` to discover supported mechanisms instead of CAPA).
+    Auth {
+        mechanism: Option<String>,
+        initial_response: Option<String>,
+    },
 }
 
 impl fmt::Display for Pop3Command {
@@ -54,6 +62,14 @@ impl fmt::Display for Pop3Command {
             Pop3Command::Apop { name, .. } => write!(f, "APOP {}", name),
             Pop3Command::Capa => write!(f, "CAPA"),
             Pop3Command::Stls => write!(f, "STLS"),
+            Pop3Command::Auth {
+                mechanism,
+                initial_response,
+            } => match (mechanism, initial_response) {
+                (Some(m), Some(_ir)) => write!(f, "AUTH {} <initial-response>", m),
+                (Some(m), None) => write!(f, "AUTH {}", m),
+                (None, _) => write!(f, "AUTH"),
+            },
         }
     }
 }
@@ -79,5 +95,33 @@ mod tests {
         assert_eq!(Pop3Command::Capa, Pop3Command::Capa);
         assert_eq!(Pop3Command::Stls, Pop3Command::Stls);
         assert_ne!(Pop3Command::Capa, Pop3Command::Stls);
+    }
+
+    #[test]
+    fn test_command_display_auth() {
+        assert_eq!(
+            Pop3Command::Auth {
+                mechanism: None,
+                initial_response: None,
+            }
+            .to_string(),
+            "AUTH"
+        );
+        assert_eq!(
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".into()),
+                initial_response: None,
+            }
+            .to_string(),
+            "AUTH PLAIN"
+        );
+        assert_eq!(
+            Pop3Command::Auth {
+                mechanism: Some("PLAIN".into()),
+                initial_response: Some("AGFsaWNlAHNlY3JldA==".into()),
+            }
+            .to_string(),
+            "AUTH PLAIN <initial-response>"
+        );
     }
 }

@@ -151,6 +151,11 @@ pub struct MessageMetadata {
     uid: u32,
     flags: MessageFlags,
     size: usize,
+    /// RFC 5256 thread identifier assigned at delivery time.
+    /// `None` for messages stored before threading was introduced, or for
+    /// backends that do not implement threading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 impl MessageMetadata {
@@ -169,6 +174,26 @@ impl MessageMetadata {
             uid,
             flags,
             size,
+            thread_id: None,
+        }
+    }
+
+    /// Create new message metadata with a thread ID.
+    pub fn new_with_thread_id(
+        message_id: MessageId,
+        mailbox_id: MailboxId,
+        uid: u32,
+        flags: MessageFlags,
+        size: usize,
+        thread_id: Option<String>,
+    ) -> Self {
+        Self {
+            message_id,
+            mailbox_id,
+            uid,
+            flags,
+            size,
+            thread_id,
         }
     }
 

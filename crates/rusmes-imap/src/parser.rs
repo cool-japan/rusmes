@@ -263,8 +263,21 @@ fn parse_imap_command_group2(input: &str) -> IResult<&str, ImapCommand> {
         parse_noop,
         parse_idle,
         parse_namespace,
+        parse_compress,
     ))
     .parse(input)
+}
+
+fn parse_compress(input: &str) -> IResult<&str, ImapCommand> {
+    let (input, _) = tag_no_case("COMPRESS").parse(input)?;
+    let (input, _) = space1(input)?;
+    let (input, mechanism) = take_while1(|c: char| !c.is_whitespace()).parse(input)?;
+    Ok((
+        input,
+        ImapCommand::Compress {
+            mechanism: mechanism.to_uppercase(),
+        },
+    ))
 }
 
 fn parse_idle(input: &str) -> IResult<&str, ImapCommand> {

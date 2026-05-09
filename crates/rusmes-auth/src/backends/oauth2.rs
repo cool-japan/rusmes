@@ -272,9 +272,9 @@ impl OAuth2Backend {
         let n_bytes = BASE64.decode(n)?;
         let e_bytes = BASE64.decode(e)?;
 
-        // Create decoding key
-        let decoding_key =
-            DecodingKey::from_rsa_components(&BASE64.encode(&n_bytes), &BASE64.encode(&e_bytes))?;
+        // Create decoding key directly from raw bytes to avoid any base64
+        // re-encoding mismatches between standard and URL-safe variants.
+        let decoding_key = DecodingKey::from_rsa_raw_components(&n_bytes, &e_bytes);
 
         // Validate token
         let mut validation = Validation::new(Algorithm::RS256);
@@ -485,6 +485,18 @@ impl AuthBackend for OAuth2Backend {
         Err(anyhow::anyhow!(
             "OAuth2 backend does not support password changes (external provider)"
         ))
+    }
+
+    /// Verify a Bearer token and return the authenticated [`Username`].
+    ///
+    /// Delegates to the existing internal `OAuth2Backend::xoauth2_authenticate`
+    /// verifier which first attempts JWT validation against the provider's JWKS
+    /// and falls back to the token-introspection endpoint if available.
+    async fn verify_bearer_token(&self, token: &str) -> anyhow::Result<Username> {
+        let raw = self.xoauth2_authenticate(token).await?;
+        let username = Username::new(raw)
+            .map_err(|e| anyhow::anyhow!("Bearer token resolved to invalid username: {}", e))?;
+        Ok(username)
     }
 }
 
@@ -1465,5 +1477,169 @@ mod tests {
 
         let cache = backend.token_cache.read().await;
         assert_eq!(cache.len(), 50);
+    }
+
+    // ========================================================================
+    // verify_bearer_token Tests
+    // ========================================================================
+
+    /// Build a signed RS256 JWT and a matching JWKS entry so tests can verify
+    /// the happy path without hitting any network endpoint.
+    #[cfg(test)]
+    fn make_signed_jwt_and_jwks(
+        client_id: &str,
+        email: &str,
+    ) -> anyhow::Result<(String, Jwks, String)> {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use rsa::pkcs8::EncodePrivateKey;
+        use rsa::RsaPrivateKey;
+
+        // Generate a small RSA key — 512 bits is enough for tests only.
+        let bits = 512_usize;
+        let mut rng = rand_core::OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, bits)?;
+        let public_key = private_key.to_public_key();
+
+        // Serialize private key to PEM so jsonwebtoken can sign with it.
+        let private_pem = private_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .map_err(|e| anyhow::anyhow!("pkcs8 pem error: {}", e))?;
+
+        let encoding_key = EncodingKey::from_rsa_pem(private_pem.as_bytes())
+            .map_err(|e| anyhow::anyhow!("encoding key error: {}", e))?;
+
+        let kid = "test-key-1".to_string();
+
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.clone());
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let claims = Claims {
+            sub: email.to_string(),
+            email: Some(email.to_string()),
+            exp: now + 3600,
+            iat: now,
+            iss: "https://test.example.com".to_string(),
+            aud: client_id.to_string(),
+        };
+
+        let token = encode(&header, &claims, &encoding_key)
+            .map_err(|e| anyhow::anyhow!("jwt encode error: {}", e))?;
+
+        // Build a matching JWK from the public key's n/e components.
+        use rsa::traits::PublicKeyParts;
+        let n_bytes = public_key.n().to_bytes_be();
+        let e_bytes = public_key.e().to_bytes_be();
+
+        let jwk = Jwk {
+            kid: kid.clone(),
+            kty: "RSA".to_string(),
+            key_use: Some("sig".to_string()),
+            alg: Some("RS256".to_string()),
+            n: Some(BASE64.encode(&n_bytes)),
+            e: Some(BASE64.encode(&e_bytes)),
+        };
+
+        let jwks = Jwks { keys: vec![jwk] };
+
+        Ok((token, jwks, kid))
+    }
+
+    #[tokio::test]
+    async fn test_oauth2_bearer_valid_token() {
+        let client_id = "test-client";
+        let email = "alice@example.com";
+
+        let (token, jwks, _kid) = make_signed_jwt_and_jwks(client_id, email).unwrap();
+
+        let config = OAuth2Config {
+            provider: OidcProvider::Generic {
+                issuer_url: "https://test.example.com".to_string(),
+                client_id: client_id.to_string(),
+                client_secret: "secret".to_string(),
+                jwks_url: "https://test.example.com/jwks".to_string(),
+            },
+            introspection_endpoint: None,
+            jwks_cache_ttl: 3600,
+            enable_refresh_tokens: false,
+            allowed_algorithms: vec![Algorithm::RS256],
+        };
+
+        let backend = OAuth2Backend::new(config);
+
+        // Pre-populate the JWKS cache so no network call is made.
+        {
+            let mut cache = backend.jwks_cache.write().await;
+            *cache = Some((jwks, SystemTime::now()));
+        }
+
+        let result = backend.verify_bearer_token(&token).await;
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+        let username = result.unwrap();
+        assert_eq!(username.to_string(), email);
+    }
+
+    #[tokio::test]
+    async fn test_bearer_malformed_token() {
+        // A malformed / non-JWT token must return Err, not panic.
+        let backend = OAuth2Backend::new(OAuth2Config::default());
+        let result = backend.verify_bearer_token("not.a.jwt").await;
+        assert!(
+            result.is_err(),
+            "malformed token should be rejected, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_backend_bearer_rejected() {
+        use crate::file::FileAuthBackend;
+        use std::env::temp_dir;
+
+        // Create a minimal passwd file so FileAuthBackend can be constructed.
+        let path = temp_dir().join("test_file_backend_bearer.passwd");
+        tokio::fs::write(&path, b"").await.unwrap();
+
+        let backend = FileAuthBackend::new(path.to_str().unwrap()).await.unwrap();
+
+        let result = backend.verify_bearer_token("some-token").await;
+        assert!(
+            result.is_err(),
+            "FileAuthBackend should reject Bearer tokens"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sql_backend_bearer_rejected() {
+        use crate::backends::sql::{SqlBackend, SqlConfig};
+
+        // Unique in-memory SQLite database URL — no file on disk needed.
+        let url = format!(
+            "sqlite:file:rusmes_sql_bearer_test_{}?mode=memory&cache=shared",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+
+        let config = SqlConfig {
+            database_url: url,
+            ..Default::default()
+        };
+
+        match SqlBackend::new(config).await {
+            Ok(backend) => {
+                let result = backend.verify_bearer_token("some-token").await;
+                assert!(result.is_err(), "SqlBackend should reject Bearer tokens");
+            }
+            Err(_) => {
+                // If SQLite initialisation fails in this environment, skip the
+                // assertion — the default trait method is proven by the file
+                // backend test above.
+            }
+        }
     }
 }

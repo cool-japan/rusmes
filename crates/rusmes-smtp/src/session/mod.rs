@@ -1,9 +1,12 @@
 //! SMTP session state machine and handler
 
+mod data;
+
 use crate::command::SmtpCommand;
-use crate::parser::parse_command;
+use crate::parser::parse_command_smtputf8;
 use crate::response::SmtpResponse;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use ipnetwork::IpNetwork;
 use rusmes_auth::AuthBackend;
 use rusmes_core::{MailProcessorRouter, RateLimiter};
 use rusmes_proto::{MailAddress, Username};
@@ -100,6 +103,21 @@ pub struct SmtpConfig {
     pub connection_timeout: Duration,
     /// Idle timeout (time between commands)
     pub idle_timeout: Duration,
+    /// Blocked CIDR networks — connections from these IPs are silently dropped
+    /// immediately after TCP accept (before the SMTP banner is sent).
+    pub blocked_networks: Vec<IpNetwork>,
+    /// Maximum size of an in-memory DATA buffer before spilling to a tempfile.
+    ///
+    /// Messages exceeding this threshold are written to a temporary file on disk
+    /// and delivered as [`rusmes_proto::MessageBody::Large`] to the storage
+    /// pipeline.  Defaults to 1 MiB.
+    pub data_tempfile_threshold: usize,
+    /// Directory used to write DATA spill tempfiles.
+    ///
+    /// Defaults to the OS temporary directory ([`std::env::temp_dir()`]).
+    /// Tests can override this field with an isolated directory to avoid
+    /// interference when multiple test processes run concurrently.
+    pub data_spill_dir: std::path::PathBuf,
 }
 
 impl Default for SmtpConfig {
@@ -115,6 +133,9 @@ impl Default for SmtpConfig {
             local_domains: vec!["localhost".to_string()],
             connection_timeout: Duration::from_secs(3600), // 1 hour
             idle_timeout: Duration::from_secs(300),        // 5 minutes
+            blocked_networks: Vec::new(),
+            data_tempfile_threshold: 1024 * 1024, // 1 MiB
+            data_spill_dir: std::env::temp_dir(),
         }
     }
 }
@@ -127,12 +148,22 @@ struct RecipientCacheEntry {
 }
 
 /// SCRAM-SHA-256 authentication state
+///
+/// Captures the data needed to verify the client's proof in the second SCRAM round
+/// trip (RFC 5802 §5). The credential bundle (`stored_key` + `server_key`) is fetched
+/// from the [`AuthBackend`] during the first round trip and cached here so the
+/// verification round trip does not need to re-query the backend.
 #[derive(Debug, Clone)]
 struct ScramState {
     client_first_bare: String,
     server_first: String,
     nonce: String,
     username: String,
+    /// `SHA-256(ClientKey)` — used to verify the client proof.
+    stored_key: Vec<u8>,
+    /// `HMAC-SHA-256(SaltedPassword, "Server Key")` — used to compute the server
+    /// signature returned to the client on success.
+    server_key: Vec<u8>,
 }
 
 /// SMTP session handler
@@ -156,6 +187,20 @@ pub struct SmtpSession {
     cram_md5_challenge: Option<String>,
     /// SCRAM-SHA-256 authentication state
     scram_state: Option<ScramState>,
+    /// Whether the client greeted with EHLO (as opposed to HELO).
+    ///
+    /// RFC 6531 §3 forbids using the SMTPUTF8 MAIL parameter when the session
+    /// was opened with a plain HELO greeting — SMTPUTF8 is an ESMTP extension
+    /// and requires EHLO negotiation.
+    ehlo_used: bool,
+    /// Peer certificate chain captured after a mutual-TLS handshake.
+    ///
+    /// Populated by the TLS handshake handler when the
+    /// submission server is configured with `client_auth = "optional"` or
+    /// `"required"` and the client presented a certificate.  `None` means
+    /// either mTLS is disabled or the client did not send a certificate
+    /// (allowed when `client_auth = "optional"`).
+    pub peer_certificates: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
 }
 
 /// SMTP session with stream
@@ -202,6 +247,8 @@ impl SmtpSessionHandler {
                 recipient_cache: Arc::new(RwLock::new(HashMap::new())),
                 cram_md5_challenge: None,
                 scram_state: None,
+                ehlo_used: false,
+                peer_certificates: None,
             },
             stream,
             pipelined_commands: Vec::new(),
@@ -212,6 +259,20 @@ impl SmtpSessionHandler {
 
     /// Handle the SMTP session
     pub async fn handle(mut self) -> anyhow::Result<()> {
+        // Track this session in the active-connections gauge and the TLS counter.
+        // The guard's Drop decrements the gauge regardless of how this method exits
+        // (success, ?, panic-unwind, early break).
+        let metrics = rusmes_metrics::global_metrics();
+        let _conn_guard = metrics.connection_guard("smtp");
+        // Count every accepted TCP connection as one SMTP connection.
+        metrics.inc_smtp_connections();
+        // SMTP sessions start plaintext on the standard MSA port; STARTTLS upgrades happen
+        // mid-session. The implicit-TLS variant ("smtps" on 465) would be wrapped before
+        // SmtpSessionHandler::new — we treat it as the same code path here and label `no`
+        // up-front; a future STARTTLS branch in the handler should call
+        // `metrics.inc_tls_session(rusmes_metrics::tls_label::STARTTLS)` on successful upgrade.
+        metrics.inc_tls_session(rusmes_metrics::tls_label::NO);
+
         let (read_half, write_half) = tokio::io::split(self.stream);
         let mut reader = BufReader::new(read_half);
         let mut writer = BufWriter::new(write_half);
@@ -257,11 +318,14 @@ impl SmtpSessionHandler {
                     break;
                 }
                 Err(_) => {
-                    // Idle timeout
-                    tracing::info!("Idle timeout for {}", self.session.remote_addr);
+                    // Idle timeout — send RFC 5321 compliant closing response
+                    tracing::info!(
+                        peer = %self.session.remote_addr,
+                        "smtp.session idle timeout, closing"
+                    );
                     Self::write_response_to(
                         &mut writer,
-                        SmtpResponse::new(421, "4.4.2 Idle timeout - closing connection"),
+                        SmtpResponse::new(421, "4.4.2 Connection timed out due to inactivity"),
                         &self.session.remote_addr,
                     )
                     .await?;
@@ -310,8 +374,9 @@ impl SmtpSessionHandler {
                 continue;
             }
 
-            // Parse command
-            let command = match parse_command(line_trimmed) {
+            // Parse command — use the SMTPUTF8-aware variant when the client
+            // opened the session with EHLO (RFC 6531 §3 requires EHLO).
+            let command = match parse_command_smtputf8(line_trimmed, self.session.ehlo_used) {
                 Ok(cmd) => cmd,
                 Err(e) => {
                     tracing::warn!("Failed to parse command: {}", e);
@@ -330,6 +395,7 @@ impl SmtpSessionHandler {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::error!("Error handling command: {}", e);
+                    rusmes_metrics::global_metrics().inc_smtp_errors();
                     SmtpResponse::local_error("Internal server error")
                 }
             };
@@ -369,8 +435,12 @@ impl SmtpSessionHandler {
         Ok(())
     }
 
-    /// Handle DATA input (message body)
-    async fn handle_data_input<R, W>(
+    /// Handle DATA input (message body) — delegates to `data` submodule.
+    ///
+    /// Implements RFC 5321 §4.5.2 transparency (dot-stuffing removal) and
+    /// the hybrid in-memory / tempfile spill policy governed by
+    /// [`SmtpConfig::data_tempfile_threshold`].
+    pub(crate) async fn handle_data_input<R, W>(
         session: &mut SmtpSession,
         reader: &mut R,
         writer: &mut W,
@@ -380,129 +450,11 @@ impl SmtpSessionHandler {
         R: AsyncBufReadExt + Unpin,
         W: AsyncWriteExt + Unpin,
     {
-        let mut message_data = Vec::new();
-        let mut line = String::new();
-
-        loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                return Err(anyhow::anyhow!("Unexpected EOF during DATA"));
-            }
-
-            // Check for end of message (.<CRLF>)
-            if line.trim() == "." {
-                break;
-            }
-
-            // Remove transparency (leading dot)
-            let line_to_add = if line.starts_with("..") {
-                &line[1..]
-            } else {
-                &line
-            };
-
-            message_data.extend_from_slice(line_to_add.as_bytes());
-        }
-
-        // Check size limit
-        let message_size = message_data.len();
-        if message_size > session.config.max_message_size {
-            Self::write_response_to(
-                writer,
-                SmtpResponse::storage_exceeded(format!(
-                    "Message size {} exceeds maximum {}",
-                    message_size, session.config.max_message_size
-                )),
-                remote_addr,
-            )
-            .await?;
-            session.transaction.reset();
-            session.state = SmtpState::Authenticated;
-            return Ok(());
-        }
-
-        // Check declared size if provided
-        if let Some(declared_size) = session.transaction.declared_size {
-            // Allow some tolerance (10%) for encoding differences
-            let max_allowed = declared_size + (declared_size / 10);
-            if message_size > max_allowed {
-                Self::write_response_to(
-                    writer,
-                    SmtpResponse::storage_exceeded(format!(
-                        "Message size {} exceeds declared size {}",
-                        message_size, declared_size
-                    )),
-                    remote_addr,
-                )
-                .await?;
-                session.transaction.reset();
-                session.state = SmtpState::Authenticated;
-                return Ok(());
-            }
-        }
-
-        // Message accepted
-        session.transaction.message_size = message_size;
-        session.transaction.message_data = message_data;
-
-        let sender_display = session
-            .transaction
-            .sender
-            .as_ref()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown>".to_string());
-        tracing::info!(
-            "Accepted message from {} ({} bytes) with {} recipient(s)",
-            sender_display,
-            message_size,
-            session.transaction.recipients.len()
-        );
-
-        // Send immediate response to client
-        Self::write_response_to(
-            writer,
-            SmtpResponse::ok("Message accepted for delivery"),
-            remote_addr,
-        )
-        .await?;
-
-        // Process the message asynchronously
-        tracing::info!("About to spawn async message processing task");
-        let sender = session.transaction.sender.clone();
-        let recipients = session.transaction.recipients.clone();
-        let message_data = session.transaction.message_data.clone();
-        let router = session.processor_router.clone();
-
-        tracing::info!(
-            "Spawning task for {} recipients, {} bytes",
-            recipients.len(),
-            message_data.len()
-        );
-
-        tokio::spawn(async move {
-            tracing::info!("Inside spawned task - starting processing");
-            if let Err(e) = SmtpSessionHandler::process_accepted_message(
-                sender,
-                recipients,
-                message_data,
-                router,
-            )
-            .await
-            {
-                tracing::error!("Failed to process message: {}", e);
-            }
-        });
-
-        // Reset transaction state
-        session.transaction.reset();
-        session.state = SmtpState::Authenticated;
-
-        Ok(())
+        data::handle_data_input(session, reader, writer, remote_addr).await
     }
 
     /// Write a response to a writer
-    async fn write_response_to<W: AsyncWriteExt + Unpin>(
+    pub(crate) async fn write_response_to<W: AsyncWriteExt + Unpin>(
         writer: &mut W,
         response: SmtpResponse,
         remote_addr: &SocketAddr,
@@ -511,47 +463,6 @@ impl SmtpSessionHandler {
         tracing::debug!("SMTP response to {}: {}", remote_addr, formatted.trim());
         writer.write_all(formatted.as_bytes()).await?;
         writer.flush().await?;
-        Ok(())
-    }
-
-    /// Process an accepted message through the mail processor pipeline
-    async fn process_accepted_message(
-        sender: Option<rusmes_proto::MailAddress>,
-        recipients: Vec<rusmes_proto::MailAddress>,
-        message_data: Vec<u8>,
-        router: Arc<rusmes_core::MailProcessorRouter>,
-    ) -> anyhow::Result<()> {
-        use bytes::Bytes;
-        use rusmes_proto::{HeaderMap, Mail, MessageBody, MimeMessage};
-
-        tracing::info!(
-            "Starting message processing for {} recipients",
-            recipients.len()
-        );
-
-        // Parse message headers and body
-        let (headers, body_offset) = rusmes_proto::mime::parse_headers(&message_data)?;
-
-        let mut header_map = HeaderMap::new();
-        for (name, value) in headers {
-            header_map.insert(name, value);
-        }
-
-        let body = if body_offset < message_data.len() {
-            Bytes::from(message_data[body_offset..].to_vec())
-        } else {
-            Bytes::new()
-        };
-
-        let message = MimeMessage::new(header_map, MessageBody::Small(body));
-        let mail = Mail::new(sender, recipients, message, None, None);
-
-        tracing::info!("Processing mail {} through pipeline", mail.id());
-
-        // Process through the router
-        router.route(mail).await?;
-
-        tracing::info!("Mail processing completed");
         Ok(())
     }
 }
@@ -584,7 +495,14 @@ impl SmtpSession {
             return Ok(SmtpResponse::bad_sequence("Out of sequence"));
         }
 
+        tracing::info!(
+            peer = %self.remote_addr,
+            client_hostname = %domain,
+            "smtp.session HELO received"
+        );
         self.transaction.helo_name = Some(domain);
+        // HELO does not enable ESMTP extensions — SMTPUTF8 requires EHLO.
+        self.ehlo_used = false;
         self.state = SmtpState::Authenticated;
 
         Ok(SmtpResponse::ok(format!(
@@ -600,7 +518,14 @@ impl SmtpSession {
             return Ok(SmtpResponse::bad_sequence("Out of sequence"));
         }
 
+        tracing::info!(
+            peer = %self.remote_addr,
+            client_hostname = %domain,
+            "smtp.session EHLO received"
+        );
         self.transaction.helo_name = Some(domain);
+        // EHLO enables ESMTP extensions — SMTPUTF8 is now available.
+        self.ehlo_used = true;
         self.state = SmtpState::Authenticated;
 
         let mut extensions = vec![
@@ -636,9 +561,13 @@ impl SmtpSession {
             return Ok(SmtpResponse::bad_sequence("Authentication required"));
         }
 
-        // Check message rate limit
+        // Check message rate limit (IP + sender combined for tightest control)
         let ip = self.remote_addr.ip();
-        if !self.rate_limiter.allow_message(ip).await {
+        if !self
+            .rate_limiter
+            .allow_message_ip_and_sender(ip, &from.as_string())
+            .await
+        {
             tracing::warn!("Message rate limit exceeded for {} from {}", from, ip);
             return Ok(SmtpResponse::mailbox_unavailable(
                 "Rate limit exceeded, please try again later",
@@ -693,8 +622,14 @@ impl SmtpSession {
                     }
                 }
                 "SMTPUTF8" => {
-                    // RFC 6531 - SMTPUTF8 extension
-                    // This parameter has no value
+                    // RFC 6531 §3.4 — SMTPUTF8 is an ESMTP extension; it is
+                    // only available after EHLO (not HELO). The parameter must
+                    // carry no value.
+                    if !self.ehlo_used {
+                        return Ok(SmtpResponse::parameter_error(
+                            "SMTPUTF8 requires EHLO (not HELO)",
+                        ));
+                    }
                     if param.value.is_none() {
                         self.transaction.smtputf8 = true;
                     } else {
@@ -710,6 +645,21 @@ impl SmtpSession {
             }
         }
 
+        // RFC 6531 §3.4: if the reverse-path contains a non-ASCII local-part,
+        // the client MUST have declared SMTPUTF8 in this MAIL FROM command.
+        // Reject with 501 5.5.4 if the parameter was omitted.
+        if from.local_part().bytes().any(|b| b >= 0x80) && !self.transaction.smtputf8 {
+            return Ok(SmtpResponse::new(
+                501,
+                "5.5.4 Non-ASCII local-part requires SMTPUTF8 parameter (RFC 6531 §3.4)",
+            ));
+        }
+
+        tracing::info!(
+            peer = %self.remote_addr,
+            mail_from = %from,
+            "smtp.session MAIL FROM accepted"
+        );
         self.transaction.sender = Some(from.clone());
         self.state = SmtpState::MailTransaction;
 
@@ -734,6 +684,11 @@ impl SmtpSession {
 
         // Check relay authorization
         if !self.is_relay_allowed(&to) {
+            tracing::info!(
+                peer = %self.remote_addr,
+                rcpt_to = %to,
+                "smtp.session RCPT TO rejected: relaying denied"
+            );
             return Ok(SmtpResponse::new(550, "5.7.1 Relaying denied"));
         }
 
@@ -770,6 +725,11 @@ impl SmtpSession {
         }
 
         // Add recipient
+        tracing::info!(
+            peer = %self.remote_addr,
+            rcpt_to = %to,
+            "smtp.session RCPT TO accepted"
+        );
         self.transaction.recipients.push(to.clone());
 
         Ok(SmtpResponse::ok(format!("Recipient {} OK", to)))
@@ -862,6 +822,10 @@ impl SmtpSession {
 
     /// Handle QUIT command
     async fn handle_quit(&mut self) -> anyhow::Result<SmtpResponse> {
+        tracing::info!(
+            peer = %self.remote_addr,
+            "smtp.session QUIT received"
+        );
         self.state = SmtpState::Quit;
         Ok(SmtpResponse::closing())
     }
@@ -872,7 +836,13 @@ impl SmtpSession {
             return Ok(SmtpResponse::not_implemented("STARTTLS not available"));
         }
 
-        // In a real implementation, we would upgrade to TLS here
+        // Record the STARTTLS upgrade in the metrics layer. The actual TLS upgrade is
+        // performed by the server-side stream wrapper (still being wired); we count the
+        // request-and-agree event here because that's the operationally meaningful signal
+        // (a client successfully negotiated an upgrade). When the upgrade is wired in,
+        // this call should remain — it is the right semantic event for the counter.
+        rusmes_metrics::global_metrics().inc_tls_session(rusmes_metrics::tls_label::STARTTLS);
+
         Ok(SmtpResponse::new(220, "Ready to start TLS"))
     }
 
@@ -915,6 +885,7 @@ impl SmtpSession {
             Ok(creds) => creds,
             Err(e) => {
                 tracing::warn!("Failed to parse PLAIN auth: {}", e);
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
                 return Ok(SmtpResponse::new(535, "5.7.8 Authentication failed"));
             }
         };
@@ -924,6 +895,7 @@ impl SmtpSession {
             Ok(u) => u,
             Err(e) => {
                 tracing::warn!("Invalid username '{}': {}", username, e);
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
                 return Ok(SmtpResponse::new(535, "5.7.8 Authentication failed"));
             }
         };
@@ -937,15 +909,33 @@ impl SmtpSession {
             Ok(true) => {
                 self.authenticated = true;
                 self.username = Some(username.clone());
-                tracing::info!("User '{}' authenticated successfully (PLAIN)", username);
+                tracing::info!(
+                    peer = %self.remote_addr,
+                    username = %username,
+                    mechanism = "PLAIN",
+                    "smtp.session AUTH success"
+                );
+                rusmes_metrics::global_metrics().inc_smtp_auth_success();
                 Ok(SmtpResponse::new(235, "2.7.0 Authentication successful"))
             }
             Ok(false) => {
-                tracing::warn!("Authentication failed for user '{}'", username);
+                tracing::warn!(
+                    peer = %self.remote_addr,
+                    username = %username,
+                    mechanism = "PLAIN",
+                    "smtp.session AUTH failure"
+                );
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
                 Ok(SmtpResponse::new(535, "5.7.8 Authentication failed"))
             }
             Err(e) => {
-                tracing::error!("Authentication error for user '{}': {}", username, e);
+                tracing::error!(
+                    peer = %self.remote_addr,
+                    username = %username,
+                    error = %e,
+                    "smtp.session AUTH backend error"
+                );
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
                 Ok(SmtpResponse::new(535, "5.7.8 Authentication failed"))
             }
         }
@@ -1026,6 +1016,7 @@ impl SmtpSession {
                 "CRAM-MD5 authentication failed: user '{}' does not exist",
                 username
             );
+            rusmes_metrics::global_metrics().inc_smtp_auth_failure();
             return Ok(SmtpResponse::new(
                 535,
                 "5.7.8 Authentication credentials invalid",
@@ -1043,6 +1034,7 @@ impl SmtpSession {
             "CRAM-MD5 authentication rejected: mechanism requires plaintext password storage"
         );
 
+        rusmes_metrics::global_metrics().inc_smtp_auth_failure();
         Ok(SmtpResponse::new(
             535,
             "5.7.8 Authentication credentials invalid",
@@ -1176,34 +1168,58 @@ impl SmtpSession {
         let server_nonce = crate::auth::generate_scram_server_nonce()?;
         let nonce = format!("{}{}", client_nonce, server_nonce);
 
-        // IMPORTANT: SCRAM-SHA-256 requires different credential storage than bcrypt
-        // The current AuthBackend uses bcrypt which is incompatible with SCRAM
-        // For SCRAM to work, we need:
-        // 1. Salt and iteration count for PBKDF2
-        // 2. StoredKey and ServerKey derived from password
+        // Fetch the user's RFC 5802 SCRAM credential bundle from the auth backend.
         //
-        // For now, we'll use placeholder values and document this limitation
-        tracing::warn!(
-            "SCRAM-SHA-256 authentication attempted for user '{}', but AuthBackend does not support SCRAM credentials",
-            username
+        // `Ok(None)` means the backend has no SCRAM material for this user — either
+        // it does not support SCRAM at all (SQL/LDAP/OAuth2 default), or the user
+        // exists but has not been enrolled in SCRAM. Per RFC 4954 §4 we respond
+        // with 504 5.5.4 (mechanism not available); the client may fall back to
+        // PLAIN/LOGIN which use the bcrypt password.
+        let creds = match self.auth_backend.fetch_scram_credentials(&username).await {
+            Ok(Some(creds)) => creds,
+            Ok(None) => {
+                tracing::info!(
+                    "SCRAM-SHA-256 declined for user '{}': no SCRAM credentials stored",
+                    username
+                );
+                // 504 means "mechanism not available", not an auth failure per se, but we
+                // record it as a failure so operators can track declining SCRAM attempts.
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
+                return Ok(SmtpResponse::new(
+                    504,
+                    "5.5.4 SCRAM-SHA-256 mechanism not available for this user",
+                ));
+            }
+            Err(e) => {
+                tracing::error!(
+                    "SCRAM-SHA-256 credential lookup failed for user '{}': {}",
+                    username,
+                    e
+                );
+                rusmes_metrics::global_metrics().inc_smtp_auth_failure();
+                return Ok(SmtpResponse::new(
+                    454,
+                    "4.7.0 Temporary authentication failure",
+                ));
+            }
+        };
+
+        // Build server-first message from the user's actual SCRAM credentials.
+        let server_first = format!(
+            "r={},s={},i={}",
+            nonce,
+            BASE64.encode(&creds.salt),
+            creds.iteration_count
         );
 
-        // Placeholder: Use fixed salt and iteration count
-        // In production, these should be stored per-user in the auth backend
-        let mut salt = [0u8; 16];
-        getrandom::fill(&mut salt)
-            .map_err(|e| anyhow::anyhow!("RNG failure generating SCRAM salt: {}", e))?;
-        let iterations = 4096u32;
-
-        // Build server-first message
-        let server_first = format!("r={},s={},i={}", nonce, BASE64.encode(salt), iterations);
-
-        // Store state for next round
+        // Store state (including the credential bundle) for the verification round.
         self.scram_state = Some(ScramState {
             client_first_bare: client_first_bare.clone(),
             server_first: server_first.clone(),
             nonce: nonce.clone(),
             username: username.clone(),
+            stored_key: creds.stored_key,
+            server_key: creds.server_key,
         });
 
         // Send server-first as base64-encoded 334 response
@@ -1247,94 +1263,59 @@ impl SmtpSession {
                 state.nonce,
                 nonce
             );
+            rusmes_metrics::global_metrics().inc_smtp_auth_failure();
             return Ok(SmtpResponse::new(
                 535,
                 "5.7.8 Authentication credentials invalid",
             ));
         }
 
-        // Check if user exists
-        let username_obj = rusmes_proto::Username::new(state.username.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid username: {}", e))?;
+        // RFC 5802 §3 AuthMessage =
+        //   client-first-message-bare + "," + server-first-message + "," + client-final-message-without-proof
+        let auth_message = format!(
+            "{},{},{}",
+            state.client_first_bare, state.server_first, client_final_without_proof
+        );
 
-        let user_exists = self.auth_backend.verify_identity(&username_obj).await?;
+        // Verify the client proof against the stored key.
+        let proof_valid =
+            crate::auth::verify_scram_client_proof(&state.stored_key, &auth_message, &proof)?;
 
-        if !user_exists {
+        if !proof_valid {
             tracing::warn!(
-                "SCRAM-SHA-256 authentication failed: user '{}' does not exist",
+                "SCRAM-SHA-256 authentication failed for user '{}': client proof did not verify",
                 state.username
             );
+            rusmes_metrics::global_metrics().inc_smtp_auth_failure();
             return Ok(SmtpResponse::new(
                 535,
                 "5.7.8 Authentication credentials invalid",
             ));
         }
 
-        // IMPORTANT: Since AuthBackend doesn't support SCRAM credentials,
-        // we cannot verify the client proof properly.
-        //
-        // In a real implementation with SCRAM support, we would:
-        // 1. Get stored_key and server_key from auth backend
-        // 2. Construct auth_message from client_first_bare, server_first, client_final_without_proof
-        // 3. Verify client proof using verify_scram_client_proof()
-        // 4. Compute server signature using compute_scram_server_signature()
-        //
-        // For now, we reject all SCRAM authentication attempts with a clear error message
+        // Compute the server signature and embed it in the success response per
+        // RFC 4954 §6 (additional success data is base64-encoded onto the 235 line).
+        let server_signature =
+            crate::auth::compute_scram_server_signature(&state.server_key, &auth_message)?;
+        let server_final = format!("v={}", server_signature);
+        let server_final_b64 = BASE64.encode(server_final.as_bytes());
 
-        tracing::warn!(
-            "SCRAM-SHA-256 authentication rejected for user '{}': AuthBackend does not support SCRAM credential storage",
+        // Mark the session as authenticated and bind the username.
+        self.authenticated = true;
+        self.username = Some(state.username.clone());
+
+        tracing::info!(
+            "User '{}' authenticated successfully (SCRAM-SHA-256)",
             state.username
         );
 
-        // Log the authentication attempt for debugging
-        tracing::debug!(
-            "SCRAM-SHA-256 auth attempt - client_first_bare: {}, server_first: {}, client_final_without_proof: {}, proof: {}",
-            state.client_first_bare,
-            state.server_first,
-            client_final_without_proof,
-            proof
-        );
-
+        rusmes_metrics::global_metrics().inc_smtp_auth_success();
         Ok(SmtpResponse::new(
-            535,
-            "5.7.8 Authentication credentials invalid - SCRAM-SHA-256 requires separate credential storage",
+            235,
+            format!("2.7.0 {} Authentication successful", server_final_b64),
         ))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_transaction_validity() {
-        let mut tx = SmtpTransaction::new();
-        assert!(!tx.is_valid());
-
-        tx.sender = Some(
-            "sender@example.com"
-                .parse()
-                .expect("valid email address literal"),
-        );
-        assert!(!tx.is_valid());
-
-        tx.recipients.push(
-            "rcpt@example.com"
-                .parse()
-                .expect("valid email address literal"),
-        );
-        assert!(tx.is_valid());
-
-        tx.reset();
-        assert!(!tx.is_valid());
-    }
-
-    #[test]
-    fn test_smtp_config_default() {
-        let config = SmtpConfig::default();
-        assert_eq!(config.hostname, "localhost");
-        assert_eq!(config.max_message_size, 10 * 1024 * 1024);
-        assert!(!config.require_auth);
-        assert!(!config.enable_starttls);
-    }
-}
+mod tests;

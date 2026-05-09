@@ -217,7 +217,7 @@ async fn verify_dkim_signature(mail: &Mail) -> anyhow::Result<DkimResult> {
         }
     };
 
-    if body_hash.as_slice() != expected_bh.as_slice() {
+    if (body_hash.as_ref() as &[u8]) != expected_bh.as_slice() {
         tracing::warn!("Body hash mismatch");
         return Ok(DkimResult::Fail("Body hash mismatch"));
     }

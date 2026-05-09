@@ -59,5 +59,5 @@ assert_eq!(mail.state, MailState::Root);
 ## Tests
 
 ```bash
-cargo test -p rusmes-proto   # 10 tests
+cargo test -p rusmes-proto   # 21 tests
 ```

@@ -410,7 +410,8 @@ fn encrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
 
     // Generate random nonce
     let nonce_bytes: [u8; 12] = rand::random();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
+    let nonce = &nonce;
 
     // Encrypt
     let ciphertext = cipher
@@ -452,7 +453,11 @@ pub fn decrypt_data(data: &[u8], password: &str) -> Result<Vec<u8>> {
 
     let nonce_start = 2 + salt_len;
     let nonce_bytes = &data[nonce_start..nonce_start + 12];
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_arr: [u8; 12] = nonce_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid nonce length"))?;
+    let nonce = Nonce::from(nonce_arr);
+    let nonce = &nonce;
 
     let ciphertext = &data[nonce_start + 12..];
 

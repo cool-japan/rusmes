@@ -573,7 +573,7 @@ impl ScramSha256Mechanism {
             .map_err(|e| anyhow!("Failed to create HMAC: {}", e))?;
         mac.update(auth_message.as_bytes());
         let server_signature = mac.finalize().into_bytes();
-        Ok(BASE64.encode(server_signature.as_slice()))
+        Ok(BASE64.encode(server_signature.as_ref() as &[u8]))
     }
 }
 

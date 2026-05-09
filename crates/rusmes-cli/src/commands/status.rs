@@ -1,6 +1,9 @@
 //! Check server status
 
 use anyhow::{Context, Result};
+use colored::*;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::net::TcpStream;
 use std::path::Path;
@@ -9,110 +12,208 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::io::Read;
 
-const PID_FILE: &str = "./data/rusmes.pid";
 const SMTP_DEFAULT_PORT: u16 = 25;
 const IMAP_DEFAULT_PORT: u16 = 143;
+const METRICS_DEFAULT_PORT: u16 = 9090;
 
-/// Check server status
-pub fn run() -> Result<()> {
-    println!("Checking RusMES server status...");
-    println!();
+/// Serialisable status snapshot used for `--json` output.
+#[derive(Debug, Serialize)]
+pub struct ServerStatus {
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub uptime_secs: Option<u64>,
+    pub smtp_listening: bool,
+    pub imap_listening: bool,
+    pub pid_file_path: String,
+    pub status_message: String,
+    pub active_connections: Option<HashMap<String, i64>>,
+}
 
-    // Check PID file
-    let pid = check_pid_file()?;
+/// Query the metrics endpoint and extract active connection counts per protocol.
+///
+/// Returns `None` if the endpoint is unavailable (server not running, metrics
+/// disabled, or network error).
+fn fetch_active_connections(metrics_port: u16) -> Option<HashMap<String, i64>> {
+    let url = format!("http://127.0.0.1:{}/metrics", metrics_port);
+    let resp = reqwest::blocking::get(&url).ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().ok()?;
+    let mut map = HashMap::new();
+    for line in body.lines() {
+        // Match lines like: rusmes_active_connections{protocol="smtp"} 2
+        if line.starts_with("rusmes_active_connections{") {
+            if let Some(rest) = line.strip_prefix("rusmes_active_connections{protocol=\"") {
+                if let Some(end) = rest.find('"') {
+                    let protocol = &rest[..end];
+                    let after = &rest[end..];
+                    if let Some(val_str) = after.split('}').nth(1) {
+                        if let Ok(count) = val_str.trim().parse::<i64>() {
+                            map.insert(protocol.to_string(), count);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
 
-    // Check if process is running
-    let process_running = if let Some(pid) = pid {
-        check_process_running(pid)?
+/// Render a status frame as a human-readable `String` (used by `--watch`).
+///
+/// When `json` is `true`, the returned string is JSON-formatted.
+pub fn render(runtime_dir: &str, json: bool) -> Result<String> {
+    let pid_file = format!("{}/rusmes.pid", runtime_dir);
+    let pid = check_pid_file(&pid_file)?;
+
+    let process_running = if let Some(p) = pid {
+        check_process_running(p)?
     } else {
         false
     };
 
-    // Check if ports are listening
     let smtp_listening = check_port_listening("127.0.0.1", SMTP_DEFAULT_PORT);
     let imap_listening = check_port_listening("127.0.0.1", IMAP_DEFAULT_PORT);
 
-    // Display status
-    println!("Server status:");
-    if process_running {
-        println!("  Status: RUNNING");
-        if let Some(pid) = pid {
-            println!("  PID: {}", pid);
-        }
-    } else if pid.is_some() {
-        println!("  Status: STOPPED (stale PID file)");
+    let uptime_secs = if process_running {
+        pid.and_then(|p| get_process_uptime(p).ok())
     } else {
-        println!("  Status: STOPPED");
+        None
+    };
+
+    let status_message = if process_running {
+        "RUNNING".to_string()
+    } else if pid.is_some() {
+        "STOPPED (stale PID file)".to_string()
+    } else {
+        "Server may not be running (PID file not found)".to_string()
+    };
+
+    let active_connections = if process_running {
+        fetch_active_connections(METRICS_DEFAULT_PORT)
+    } else {
+        None
+    };
+
+    let snapshot = ServerStatus {
+        running: process_running,
+        pid,
+        uptime_secs,
+        smtp_listening,
+        imap_listening,
+        pid_file_path: pid_file.clone(),
+        status_message: status_message.clone(),
+        active_connections: active_connections.clone(),
+    };
+
+    if json {
+        return Ok(serde_json::to_string_pretty(&snapshot)?);
     }
 
-    println!();
-    println!("Service status:");
-    println!(
-        "  SMTP (port {}): {}",
+    // Human-readable rendering.
+    let mut out = String::new();
+    out.push_str("Checking RusMES server status...\n\n");
+    out.push_str("Server status:\n");
+
+    if process_running {
+        out.push_str(&format!("  Status: {}\n", "RUNNING".green().bold()));
+        if let Some(p) = pid {
+            out.push_str(&format!("  PID: {}\n", p));
+        }
+    } else if pid.is_some() {
+        out.push_str(&format!(
+            "  Status: {}\n",
+            "STOPPED (stale PID file)".yellow()
+        ));
+    } else {
+        out.push_str(&format!(
+            "  Status: {}\n",
+            "Server may not be running (PID file not found)".yellow()
+        ));
+    }
+
+    out.push_str(&format!("  PID file: {}\n", pid_file));
+    out.push('\n');
+    out.push_str("Service status:\n");
+    out.push_str(&format!(
+        "  SMTP (port {}): {}\n",
         SMTP_DEFAULT_PORT,
         if smtp_listening {
-            "listening"
+            "listening".green().to_string()
         } else {
-            "not listening"
+            "not listening".red().to_string()
         }
-    );
-    println!(
-        "  IMAP (port {}): {}",
+    ));
+    out.push_str(&format!(
+        "  IMAP (port {}): {}\n",
         IMAP_DEFAULT_PORT,
         if imap_listening {
-            "listening"
+            "listening".green().to_string()
         } else {
-            "not listening"
+            "not listening".red().to_string()
         }
-    );
+    ));
 
-    // Get uptime if running
+    if let Some(uptime) = uptime_secs {
+        out.push_str(&format!("\nUptime: {}\n", format_uptime(uptime)));
+    }
+
     if process_running {
-        if let Some(pid_val) = pid {
-            if let Ok(uptime) = get_process_uptime(pid_val) {
-                println!();
-                println!("Uptime: {}", format_uptime(uptime));
+        match active_connections {
+            Some(ref conns) => {
+                out.push_str("\nActive connections:\n");
+                let mut protocols: Vec<_> = conns.iter().collect();
+                protocols.sort_by_key(|(k, _)| k.as_str());
+                for (proto, count) in protocols {
+                    out.push_str(&format!("  {}: {}\n", proto, count));
+                }
+            }
+            None => {
+                out.push_str(
+                    "\nActive connections: unavailable (metrics endpoint not responding)\n",
+                );
             }
         }
     }
 
-    // Connection count (placeholder - would need actual implementation)
-    if process_running {
-        println!();
-        println!("Active connections: N/A (not implemented)");
-    }
+    Ok(out)
+}
 
+/// Check server status and print to stdout.
+pub fn run(runtime_dir: &str, json: bool) -> Result<()> {
+    let output = render(runtime_dir, json)?;
+    print!("{}", output);
     Ok(())
 }
 
 /// Check PID file and return PID if exists
-fn check_pid_file() -> Result<Option<u32>> {
-    let path = Path::new(PID_FILE);
+fn check_pid_file(pid_file: &str) -> Result<Option<u32>> {
+    let path = Path::new(pid_file);
     if !path.exists() {
         return Ok(None);
     }
 
     let content = fs::read_to_string(path).context("Failed to read PID file")?;
-
     let pid: u32 = content.trim().parse().context("Invalid PID in PID file")?;
-
     Ok(Some(pid))
 }
 
 /// Check if process with given PID is running
 fn check_process_running(_pid: u32) -> Result<bool> {
-    // On Linux, check if /proc/PID exists
     #[cfg(target_os = "linux")]
     {
         let proc_path = format!("/proc/{}", _pid);
         Ok(Path::new(&proc_path).exists())
     }
 
-    // On other platforms, use a different method
     #[cfg(not(target_os = "linux"))]
     {
-        // Try to send signal 0 (null signal) to check if process exists
-        // This is a placeholder - would need platform-specific implementation
+        // Signal 0 check is not portable without libc — return false conservatively.
         Ok(false)
     }
 }
@@ -148,18 +249,17 @@ fn get_process_uptime(_pid: u32) -> Result<u64> {
             .parse()
             .context("Failed to parse process start time")?;
 
-        // Get system uptime
         let uptime_content =
             fs::read_to_string("/proc/uptime").context("Failed to read system uptime")?;
         let uptime_fields: Vec<&str> = uptime_content.split_whitespace().collect();
-        let system_uptime: f64 = uptime_fields[0]
+        let system_uptime: f64 = uptime_fields
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Empty /proc/uptime"))?
             .parse()
             .context("Failed to parse system uptime")?;
 
-        // Get clock ticks per second
-        let clock_ticks = 100; // Usually 100 on Linux
-
-        // Calculate process uptime
+        // Clock ticks per second (usually 100 on Linux).
+        let clock_ticks: u64 = 100;
         let start_time_seconds = start_time / clock_ticks;
         let current_time = system_uptime as u64;
         let process_uptime = current_time.saturating_sub(start_time_seconds);
@@ -169,7 +269,6 @@ fn get_process_uptime(_pid: u32) -> Result<u64> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        // Placeholder for other platforms
         Ok(0)
     }
 }
@@ -248,5 +347,38 @@ mod tests {
     fn test_format_uptime_multiple_days() {
         let uptime = format_uptime(259200); // 3 days
         assert_eq!(uptime, "3d 0h 0m 0s");
+    }
+
+    /// `status --json` should produce parseable JSON even when the server is
+    /// not running.
+    #[test]
+    fn json_output_parses_as_json() {
+        let tmp = std::env::temp_dir().join("rusmes_status_test_no_pid_dir");
+        let dir_str = tmp.to_string_lossy().to_string();
+
+        let output = render(&dir_str, true).expect("render should not error");
+        let _: serde_json::Value =
+            serde_json::from_str(&output).expect("status --json should produce parseable JSON");
+    }
+
+    /// When `NO_COLOR` is set, the text output should not contain ANSI escapes.
+    #[test]
+    fn color_disabled_when_no_color_env() {
+        // Force color off for this test.
+        colored::control::set_override(false);
+
+        let tmp = std::env::temp_dir().join("rusmes_status_no_color_test");
+        let dir_str = tmp.to_string_lossy().to_string();
+
+        let output = render(&dir_str, false).expect("render should not error");
+
+        // ANSI escape sequences start with ESC (\x1b).
+        assert!(
+            !output.contains('\x1b'),
+            "output should not contain ANSI escapes when color is disabled"
+        );
+
+        // Restore so other tests are not affected.
+        colored::control::unset_override();
     }
 }

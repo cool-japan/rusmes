@@ -43,12 +43,14 @@
 //! In production deployments, STLS should be enabled to protect USER/PASS credentials.
 
 mod command;
+mod maildrop_lock;
 mod parser;
 mod response;
 mod server;
 mod session;
 
 pub use command::Pop3Command;
+pub use maildrop_lock::{MaildropGuard, MaildropLockManager};
 pub use parser::parse_command;
 pub use response::{Pop3Response, Pop3Status};
 pub use server::Pop3Server;

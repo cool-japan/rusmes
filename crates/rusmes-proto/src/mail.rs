@@ -311,9 +311,18 @@ impl Mail {
         (matched_mail, self)
     }
 
-    /// Get message size
+    /// Get total message size in bytes (full on-wire form: headers + body).
+    ///
+    /// Equivalent to [`MimeMessage::size_with_headers`]. This is what callers
+    /// reporting SMTP `SIZE` (RFC 1870), IMAP `RFC822.SIZE` (RFC 9051), and
+    /// quota usage want.
     pub fn size(&self) -> usize {
-        self.message.size()
+        self.message.size_with_headers()
+    }
+
+    /// Get the body byte length only (no headers).
+    pub fn body_size(&self) -> usize {
+        self.message.body_size()
     }
 }
 

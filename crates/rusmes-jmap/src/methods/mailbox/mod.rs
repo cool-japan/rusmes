@@ -18,7 +18,8 @@ pub use mailbox_types::{
     MailboxRole, MailboxSetRequest, MailboxSetResponse, MailboxSort,
 };
 
-use crate::types::JmapSetError;
+use crate::methods::ensure_account_ownership;
+use crate::types::{JmapSetError, Principal};
 use mailbox_types::{
     apply_mailbox_filter, apply_mailbox_sort, filter_mailbox_properties, generate_state,
     get_default_mailboxes, is_special_use_mailbox, validate_mailbox_name, would_create_cycle,
@@ -30,7 +31,9 @@ use std::collections::HashMap;
 pub async fn mailbox_get(
     request: MailboxGetRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<MailboxGetResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let mut list = Vec::new();
     let mut not_found = Vec::new();
 
@@ -66,11 +69,12 @@ pub async fn mailbox_get(
 }
 
 /// Handle Mailbox/set method
-#[allow(clippy::too_many_arguments)]
 pub async fn mailbox_set(
     request: MailboxSetRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<MailboxSetResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let old_state = generate_state();
     let mut created = HashMap::new();
     let mut updated = HashMap::new();
@@ -299,7 +303,9 @@ pub async fn mailbox_set(
 pub async fn mailbox_query(
     request: MailboxQueryRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<MailboxQueryResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     // Get all mailboxes (in real implementation, from storage)
     let mailboxes = get_default_mailboxes();
     let mut mailbox_list: Vec<Mailbox> = mailboxes.values().cloned().collect();
@@ -352,7 +358,9 @@ pub async fn mailbox_query(
 pub async fn mailbox_changes(
     request: MailboxChangesRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<MailboxChangesResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let since_state: u64 = request.since_state.parse().unwrap_or(0);
     let new_state = (since_state + 1).to_string();
 
@@ -376,7 +384,9 @@ pub async fn mailbox_changes(
 pub async fn mailbox_query_changes(
     request: MailboxQueryChangesRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<MailboxQueryChangesResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let new_query_state = (chrono::Utc::now().timestamp() as u64).to_string();
 
     // In production, would compare query results
@@ -399,6 +409,11 @@ pub async fn mailbox_query_changes(
 
 #[cfg(test)]
 mod tests {
+
+    fn test_principal() -> crate::types::Principal {
+        crate::types::admin_principal_for_tests()
+    }
+
     use super::*;
     use rusmes_storage::backends::filesystem::FilesystemBackend;
     use rusmes_storage::StorageBackend;
@@ -418,7 +433,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 1);
         assert_eq!(response.list[0].id, "inbox");
         assert_eq!(response.list[0].role, Some(MailboxRole::Inbox));
@@ -433,7 +450,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 6);
     }
 
@@ -461,7 +480,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.created.is_some());
         let created = response.created.unwrap();
         assert_eq!(created.len(), 1);
@@ -482,7 +503,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.not_destroyed.is_some());
         let errors = response.not_destroyed.unwrap();
         assert_eq!(errors.get("inbox").unwrap().error_type, "forbidden");
@@ -500,7 +523,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 6);
         assert_eq!(response.total, Some(6));
     }
@@ -525,7 +550,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 1);
         assert_eq!(response.ids[0], "sent");
     }
@@ -539,7 +566,9 @@ mod tests {
             max_changes: Some(50),
         };
 
-        let response = mailbox_changes(request, store.as_ref()).await.unwrap();
+        let response = mailbox_changes(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.old_state, "1");
         assert_eq!(response.new_state, "2");
         assert!(!response.has_more_changes);
@@ -558,7 +587,7 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query_changes(request, store.as_ref())
+        let response = mailbox_query_changes(request, store.as_ref(), &test_principal())
             .await
             .unwrap();
         assert_eq!(response.total, Some(6));
@@ -593,7 +622,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.not_found.len(), 1);
         assert_eq!(response.not_found[0], "nonexistent");
     }
@@ -613,7 +644,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.updated.is_some());
         let updated = response.updated.unwrap();
         let mailbox = updated.get("inbox").unwrap().as_ref().unwrap();
@@ -632,7 +665,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.position, 2);
         assert_eq!(response.ids.len(), 2);
         assert_eq!(response.total, Some(6));
@@ -662,7 +697,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.created.is_some());
         let created = response.created.unwrap();
         let mailbox = created.values().next().unwrap();
@@ -687,7 +724,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 6);
     }
 
@@ -718,7 +757,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.created.is_some());
         assert_eq!(response.created.unwrap().len(), 5);
     }
@@ -739,7 +780,9 @@ mod tests {
             properties: Some(properties),
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 1);
     }
 
@@ -752,14 +795,18 @@ mod tests {
             since_state: "5".to_string(),
             max_changes: None,
         };
-        let response1 = mailbox_changes(request1, store.as_ref()).await.unwrap();
+        let response1 = mailbox_changes(request1, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
 
         let request2 = MailboxChangesRequest {
             account_id: "acc1".to_string(),
             since_state: response1.new_state.clone(),
             max_changes: None,
         };
-        let response2 = mailbox_changes(request2, store.as_ref()).await.unwrap();
+        let response2 = mailbox_changes(request2, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
 
         assert!(response1.new_state < response2.new_state);
     }
@@ -776,7 +823,9 @@ mod tests {
             on_destroy_remove_emails: Some(true),
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.not_destroyed.is_some());
     }
 
@@ -789,7 +838,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         let roles: Vec<_> = response.list.iter().filter_map(|m| m.role).collect();
 
         assert!(roles.contains(&MailboxRole::Inbox));
@@ -812,7 +863,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 0);
         assert_eq!(response.total, Some(6));
     }
@@ -830,7 +883,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 2);
         assert_eq!(response.not_found.len(), 1);
     }
@@ -847,7 +902,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         // Old state and new state should be timestamps (may be equal if no changes)
         assert!(!response.old_state.is_empty());
         assert!(!response.new_state.is_empty());
@@ -875,7 +932,7 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query_changes(request, store.as_ref())
+        let response = mailbox_query_changes(request, store.as_ref(), &test_principal())
             .await
             .unwrap();
         assert_eq!(response.account_id, "acc1");
@@ -890,7 +947,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
 
         // Verify sort orders are assigned correctly
         let inbox = response.list.iter().find(|m| m.id == "inbox").unwrap();
@@ -909,7 +968,9 @@ mod tests {
             properties: None,
         };
 
-        let response = mailbox_get(request, store.as_ref()).await.unwrap();
+        let response = mailbox_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.list[0].is_subscribed);
     }
 
@@ -925,7 +986,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 0);
         assert_eq!(response.total, Some(6));
     }
@@ -958,7 +1021,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.created.is_some());
         assert!(response.updated.is_some());
         // Trash is special-use, cannot be destroyed
@@ -1062,7 +1127,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.created.is_some());
         let created = response.created.unwrap();
         let mailbox = created.values().next().unwrap();
@@ -1093,7 +1160,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.not_created.is_some());
         let not_created = response.not_created.unwrap();
         assert_eq!(
@@ -1126,7 +1195,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.not_created.is_some());
     }
 
@@ -1145,7 +1216,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.updated.is_some());
         let updated = response.updated.unwrap();
         let mailbox = updated.get("inbox").unwrap().as_ref().unwrap();
@@ -1170,7 +1243,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.updated.is_some());
         let updated = response.updated.unwrap();
         let mailbox = updated.get("inbox").unwrap().as_ref().unwrap();
@@ -1195,7 +1270,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.not_updated.is_some());
         let not_updated = response.not_updated.unwrap();
         assert_eq!(
@@ -1224,7 +1301,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         // None of the default mailboxes have parent_id = inbox
         assert_eq!(response.ids.len(), 0);
     }
@@ -1249,7 +1328,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         // All default mailboxes have roles
         assert_eq!(response.ids.len(), 6);
     }
@@ -1274,7 +1355,9 @@ mod tests {
             calculate_total: Some(true),
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         // All default mailboxes are subscribed
         assert_eq!(response.ids.len(), 6);
     }
@@ -1296,7 +1379,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 6);
         // First should be "Archive" alphabetically
         assert_eq!(response.ids[0], "archive");
@@ -1319,7 +1404,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 6);
         // Last sort_order (50 = archive) should be first
         assert_eq!(response.ids[0], "archive");
@@ -1334,7 +1421,9 @@ mod tests {
             max_changes: Some(10),
         };
 
-        let response = mailbox_changes(request, store.as_ref()).await.unwrap();
+        let response = mailbox_changes(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.old_state, "1");
         assert!(!response.has_more_changes);
     }
@@ -1352,7 +1441,7 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query_changes(request, store.as_ref())
+        let response = mailbox_query_changes(request, store.as_ref(), &test_principal())
             .await
             .unwrap();
         assert_eq!(response.account_id, "acc1");
@@ -1373,7 +1462,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.updated.is_some());
         let updated = response.updated.unwrap();
         let mailbox = updated.get("sent").unwrap().as_ref().unwrap();
@@ -1395,7 +1486,9 @@ mod tests {
             on_destroy_remove_emails: None,
         };
 
-        let response = mailbox_set(request, store.as_ref()).await.unwrap();
+        let response = mailbox_set(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert!(response.updated.is_some());
         let updated = response.updated.unwrap();
         let mailbox = updated.get("inbox").unwrap().as_ref().unwrap();
@@ -1422,7 +1515,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 1);
         assert_eq!(response.ids[0], "inbox");
     }
@@ -1450,7 +1545,9 @@ mod tests {
             calculate_total: None,
         };
 
-        let response = mailbox_query(request, store.as_ref()).await.unwrap();
+        let response = mailbox_query(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.ids.len(), 6);
         // All have 0 emails, so sorted by name
         assert_eq!(response.ids[0], "archive");

@@ -13,7 +13,7 @@ repository = "https://github.com/cool-japan/rusmes"
 readme = "README.md"
 
 [dependencies]
-rusmes-proto = { path = "../rusmes-proto", version = "0.1.1" }
+rusmes-proto = { path = "../rusmes-proto", version = "0.1.2" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -40,3 +40,6 @@ hex = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+rsa = { workspace = true }
+jsonwebtoken = { workspace = true }
+rand_core = { version = "0.6", features = ["getrandom"] }

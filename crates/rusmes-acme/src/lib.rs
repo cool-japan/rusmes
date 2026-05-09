@@ -74,6 +74,7 @@ pub mod client;
 pub mod config;
 pub mod dns01;
 pub mod http01;
+pub mod jwk;
 pub mod renewal;
 pub mod storage;
 
@@ -82,6 +83,7 @@ pub use client::AcmeClient;
 pub use config::{AcmeConfig, ChallengeType};
 pub use dns01::{Dns01Handler, DnsProvider, MockDnsProvider};
 pub use http01::Http01Handler;
+pub use jwk::{jwk_thumbprint, Jwk};
 pub use renewal::RenewalManager;
 
 use thiserror::Error;

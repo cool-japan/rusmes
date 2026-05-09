@@ -1,482 +1,55 @@
 //! RusMES CLI tool
 
-use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::process;
 
+use clap::Parser;
+
+use rusmes_cli::cli_def::{
+    should_color, BackupAction, CliApp, Commands, MailboxAction, QueueAction, RestoreAction,
+    UserAction,
+};
 use rusmes_cli::client::Client;
 use rusmes_cli::commands;
-
-#[derive(Parser)]
-#[command(name = "rusmes")]
-#[command(about = "RusMES - Rust Mail Enterprise Server", long_about = None)]
-#[command(version)]
-struct Cli {
-    /// Server URL
-    #[arg(long, env = "RUSMES_SERVER", default_value = "http://localhost:8080")]
-    server: String,
-
-    /// Output format (text or json)
-    #[arg(long, value_enum, default_value = "text")]
-    output: OutputFormat,
-
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Debug, Clone, clap::ValueEnum)]
-enum OutputFormat {
-    Text,
-    Json,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Initialize a new RusMES installation
-    Init {
-        /// Server domain
-        #[arg(long)]
-        domain: String,
-    },
-
-    /// Validate configuration file
-    CheckConfig {
-        /// Configuration file path
-        #[arg(short, long, default_value = "rusmes.toml")]
-        config: String,
-    },
-
-    /// Show server status
-    Status,
-
-    /// User management commands
-    User {
-        #[command(subcommand)]
-        action: UserAction,
-    },
-
-    /// Mailbox management commands
-    Mailbox {
-        #[command(subcommand)]
-        action: MailboxAction,
-    },
-
-    /// Queue management commands
-    Queue {
-        #[command(subcommand)]
-        action: QueueAction,
-    },
-
-    /// Backup commands
-    Backup {
-        #[command(subcommand)]
-        action: BackupAction,
-    },
-
-    /// Restore commands
-    Restore {
-        #[command(subcommand)]
-        action: RestoreAction,
-    },
-
-    /// Migrate storage between backends
-    Migrate {
-        /// Source backend type (filesystem, postgres, amaters)
-        #[arg(long)]
-        from: String,
-
-        /// Destination backend type
-        #[arg(long)]
-        to: String,
-
-        /// Source backend configuration (path or connection string)
-        #[arg(long)]
-        source_config: Option<String>,
-
-        /// Destination backend configuration
-        #[arg(long)]
-        dest_config: Option<String>,
-
-        /// Batch size (messages per batch)
-        #[arg(long, default_value = "100")]
-        batch_size: usize,
-
-        /// Parallel workers
-        #[arg(long, default_value = "4")]
-        parallel: usize,
-
-        /// Enable verification
-        #[arg(long)]
-        verify: bool,
-
-        /// Dry run (don't make changes)
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Resume from previous migration
-        #[arg(long)]
-        resume: bool,
-    },
-
-    /// Generate shell completions
-    Completions {
-        /// Shell type
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-}
-
-#[derive(Subcommand)]
-enum UserAction {
-    /// Add a new user
-    Add {
-        /// Email address
-        email: String,
-        /// Password
-        #[arg(long)]
-        password: String,
-        /// Quota in MB
-        #[arg(long)]
-        quota: Option<u64>,
-    },
-
-    /// List all users
-    List,
-
-    /// Delete a user
-    Delete {
-        /// Email address
-        email: String,
-        /// Force deletion without confirmation
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Change user password
-    Passwd {
-        /// Email address
-        email: String,
-        /// New password
-        #[arg(long)]
-        password: String,
-    },
-
-    /// Show user details
-    Show {
-        /// Email address
-        email: String,
-    },
-
-    /// Set user quota
-    SetQuota {
-        /// Email address
-        email: String,
-        /// Quota in MB
-        #[arg(long)]
-        quota: u64,
-    },
-
-    /// Enable user account
-    Enable {
-        /// Email address
-        email: String,
-    },
-
-    /// Disable user account
-    Disable {
-        /// Email address
-        email: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum MailboxAction {
-    /// List mailboxes for a user
-    List {
-        /// User email
-        user: String,
-    },
-
-    /// Create a new mailbox
-    Create {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-    },
-
-    /// Delete a mailbox
-    Delete {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-        /// Force deletion without confirmation
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Rename a mailbox
-    Rename {
-        /// User email
-        user: String,
-        /// Old mailbox name
-        #[arg(long)]
-        old_name: String,
-        /// New mailbox name
-        #[arg(long)]
-        new_name: String,
-    },
-
-    /// Repair mailbox
-    Repair {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-    },
-
-    /// Subscribe to a mailbox
-    Subscribe {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-    },
-
-    /// Unsubscribe from a mailbox
-    Unsubscribe {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-    },
-
-    /// Show mailbox details
-    Show {
-        /// User email
-        user: String,
-        /// Mailbox name
-        #[arg(long)]
-        name: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum QueueAction {
-    /// List messages in queue
-    List {
-        /// Filter by status (pending, retrying, failed)
-        #[arg(long)]
-        filter: Option<String>,
-    },
-
-    /// Flush the queue
-    Flush,
-
-    /// Inspect a specific message
-    Inspect {
-        /// Message ID
-        message_id: String,
-    },
-
-    /// Delete a message from the queue
-    Delete {
-        /// Message ID
-        message_id: String,
-    },
-
-    /// Retry a failed message
-    Retry {
-        /// Message ID
-        message_id: String,
-    },
-
-    /// Purge all failed messages
-    Purge,
-
-    /// Show queue statistics
-    Stats,
-}
-
-#[derive(Subcommand)]
-enum BackupAction {
-    /// Create a full backup
-    Full {
-        /// Output file path
-        #[arg(short, long)]
-        output: String,
-        /// Backup format
-        #[arg(long, value_enum, default_value = "tar-gz")]
-        format: BackupFormat,
-        /// Compression type
-        #[arg(long, value_enum, default_value = "gzip")]
-        compression: CompressionType,
-        /// Encrypt backup
-        #[arg(long)]
-        encrypt: bool,
-    },
-
-    /// Create an incremental backup
-    Incremental {
-        /// Output file path
-        #[arg(short, long)]
-        output: String,
-        /// Base backup path
-        #[arg(long)]
-        base: String,
-        /// Backup format
-        #[arg(long, value_enum, default_value = "tar-gz")]
-        format: BackupFormat,
-        /// Compression type
-        #[arg(long, value_enum, default_value = "gzip")]
-        compression: CompressionType,
-        /// Encrypt backup
-        #[arg(long)]
-        encrypt: bool,
-    },
-
-    /// List available backups
-    List,
-
-    /// Verify backup integrity
-    Verify {
-        /// Backup file path
-        backup: String,
-        /// Encryption key (if encrypted)
-        #[arg(long)]
-        key: Option<String>,
-    },
-
-    /// Upload backup to S3
-    UploadS3 {
-        /// Backup file path
-        backup: String,
-        /// S3 bucket
-        #[arg(long)]
-        bucket: String,
-        /// AWS region
-        #[arg(long)]
-        region: String,
-        /// AWS access key
-        #[arg(long, env = "AWS_ACCESS_KEY_ID")]
-        access_key: String,
-        /// AWS secret key
-        #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
-        secret_key: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RestoreAction {
-    /// Restore from a backup
-    Restore {
-        /// Backup file path
-        backup: String,
-        /// Encryption key (if encrypted)
-        #[arg(long)]
-        key: Option<String>,
-        /// Point-in-time to restore to
-        #[arg(long)]
-        point_in_time: Option<String>,
-        /// Dry run (don't actually restore)
-        #[arg(long)]
-        dry_run: bool,
-    },
-
-    /// Restore for a specific user
-    User {
-        /// Backup file path
-        backup: String,
-        /// User email
-        #[arg(long)]
-        user: String,
-        /// Encryption key (if encrypted)
-        #[arg(long)]
-        key: Option<String>,
-        /// Dry run (don't actually restore)
-        #[arg(long)]
-        dry_run: bool,
-    },
-
-    /// Download backup from S3 and restore
-    FromS3 {
-        /// S3 URL
-        s3_url: String,
-        /// S3 bucket
-        #[arg(long)]
-        bucket: String,
-        /// AWS region
-        #[arg(long)]
-        region: String,
-        /// AWS access key
-        #[arg(long, env = "AWS_ACCESS_KEY_ID")]
-        access_key: String,
-        /// AWS secret key
-        #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
-        secret_key: String,
-        /// Encryption key (if encrypted)
-        #[arg(long)]
-        key: Option<String>,
-    },
-
-    /// Show restore history
-    History,
-
-    /// Show details of a specific restore
-    Show {
-        /// Restore ID
-        restore_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum BackupFormat {
-    TarGz,
-    Binary,
-}
-
-impl From<BackupFormat> for commands::backup::BackupFormat {
-    fn from(f: BackupFormat) -> Self {
-        match f {
-            BackupFormat::TarGz => commands::backup::BackupFormat::TarGz,
-            BackupFormat::Binary => commands::backup::BackupFormat::Binary,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CompressionType {
-    None,
-    Gzip,
-    Zstd,
-}
-
-impl From<CompressionType> for commands::backup::CompressionType {
-    fn from(c: CompressionType) -> Self {
-        match c {
-            CompressionType::None => commands::backup::CompressionType::None,
-            CompressionType::Gzip => commands::backup::CompressionType::Gzip,
-            CompressionType::Zstd => commands::backup::CompressionType::Zstd,
-        }
-    }
-}
+use rusmes_storage::backends::filesystem::FilesystemBackend;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let json = matches!(cli.output, OutputFormat::Json);
+    let cli = CliApp::parse();
+
+    // Honour NO_COLOR env-var (https://no-color.org/) before our own flag.
+    // If NO_COLOR is set to any non-empty value, force color off regardless of
+    // the --color flag, matching common tool conventions.
+    let color_enabled = if std::env::var("NO_COLOR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        false
+    } else {
+        should_color(cli.color, std::io::stdout().is_terminal())
+    };
+    colored::control::set_override(color_enabled);
+
+    let json = cli.json;
+    let runtime_dir = cli.runtime_dir.clone();
 
     let result: anyhow::Result<()> = match cli.command {
         Commands::Init { domain } => commands::init::run(&domain),
 
         Commands::CheckConfig { config } => commands::check_config::run(&config),
 
-        Commands::Status => commands::status::run(),
+        Commands::Status { watch } => {
+            if let Some(interval) = watch {
+                let rt_dir = runtime_dir.clone();
+                commands::watch::run_watch_secs(interval, move || {
+                    let rt = rt_dir.clone();
+                    async move { commands::status::render(&rt, json) }
+                })
+                .await
+            } else {
+                commands::status::run(&runtime_dir, json)
+            }
+        }
 
         Commands::User { action } => {
             let client = Client::new(&cli.server)
@@ -521,8 +94,10 @@ async fn main() -> anyhow::Result<()> {
                     old_name,
                     new_name,
                 } => commands::mailbox::rename(&client, &user, &old_name, &new_name, json).await,
-                MailboxAction::Repair { user, name } => {
-                    commands::mailbox::repair(&client, &user, &name, json).await
+                MailboxAction::Repair { mailbox, vacuum } => {
+                    let data_dir = std::path::PathBuf::from(&cli.runtime_dir).join("mailboxes");
+                    let backend = FilesystemBackend::new(&data_dir);
+                    commands::mailbox::repair(&backend, mailbox.as_deref(), vacuum, json).await
                 }
                 MailboxAction::Subscribe { user, name } => {
                     commands::mailbox::subscribe(&client, &user, &name, json).await
@@ -705,80 +280,76 @@ async fn main() -> anyhow::Result<()> {
         } => {
             use commands::migrate::{BackendType, MigrationConfig, StorageMigrator};
 
-            #[allow(clippy::too_many_arguments)]
-            async fn run_migration(
-                from: String,
-                to: String,
-                source_config: Option<String>,
-                dest_config: Option<String>,
-                batch_size: usize,
-                parallel: usize,
-                verify: bool,
-                dry_run: bool,
-                resume: bool,
-            ) -> anyhow::Result<()> {
-                let source_type: BackendType = from.parse()?;
-                let dest_type: BackendType = to.parse()?;
+            let source_type: BackendType = from.parse()?;
+            let dest_type: BackendType = to.parse()?;
 
-                let default_source_config = match source_type {
-                    BackendType::Filesystem => "/var/lib/rusmes/mail".to_string(),
-                    BackendType::Postgres => "postgresql://localhost/rusmes".to_string(),
-                    BackendType::Amaters => "http://localhost:8081".to_string(),
-                };
+            let default_source_config = match source_type {
+                BackendType::Filesystem => "/var/lib/rusmes/mail".to_string(),
+                BackendType::Postgres => "postgresql://localhost/rusmes".to_string(),
+                BackendType::Amaters => "http://localhost:8081".to_string(),
+            };
 
-                let default_dest_config = match dest_type {
-                    BackendType::Filesystem => "/var/lib/rusmes/mail_new".to_string(),
-                    BackendType::Postgres => "postgresql://localhost/rusmes_new".to_string(),
-                    BackendType::Amaters => "http://localhost:8082".to_string(),
-                };
+            let default_dest_config = match dest_type {
+                BackendType::Filesystem => "/var/lib/rusmes/mail_new".to_string(),
+                BackendType::Postgres => "postgresql://localhost/rusmes_new".to_string(),
+                BackendType::Amaters => "http://localhost:8082".to_string(),
+            };
 
-                let config = MigrationConfig {
-                    source_type,
-                    source_config: source_config.unwrap_or(default_source_config),
-                    dest_type,
-                    dest_config: dest_config.unwrap_or(default_dest_config),
-                    batch_size,
-                    parallel,
-                    verify,
-                    dry_run,
-                    resume,
-                };
-
-                let mut migrator = StorageMigrator::new(config);
-
-                match migrator.migrate().await {
-                    Ok(stats) => {
-                        stats.print();
-                        migrator.print_report();
-                        Ok(())
-                    }
-                    Err(e) => {
-                        eprintln!("Migration failed: {}", e);
-                        migrator.print_report();
-                        Err(e)
-                    }
-                }
-            }
-
-            run_migration(
-                from,
-                to,
-                source_config,
-                dest_config,
+            let config = MigrationConfig {
+                source_type,
+                source_config: source_config.unwrap_or(default_source_config),
+                dest_type,
+                dest_config: dest_config.unwrap_or(default_dest_config),
                 batch_size,
                 parallel,
                 verify,
                 dry_run,
                 resume,
-            )
-            .await
+            };
+
+            let mut migrator = StorageMigrator::new(config);
+
+            match migrator.migrate().await {
+                Ok(stats) => {
+                    if json {
+                        let value = serde_json::to_string_pretty(&stats)?;
+                        println!("{}", value);
+                    } else {
+                        stats.print();
+                        migrator.print_report();
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    if !json {
+                        eprintln!("Migration failed: {}", e);
+                        migrator.print_report();
+                    } else {
+                        let err = serde_json::json!({ "error": e.to_string() });
+                        eprintln!("{}", serde_json::to_string_pretty(&err)?);
+                    }
+                    Err(e)
+                }
+            }
         }
 
         Commands::Completions { shell } => {
             use clap::CommandFactory;
-            let mut cmd = Cli::command();
+            let mut cmd = CliApp::command();
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+            Ok(())
+        }
+
+        Commands::Man => {
+            use clap::CommandFactory;
+            use clap_mangen::Man;
+            use std::io::Write;
+            let cmd = CliApp::command();
+            let man = Man::new(cmd);
+            let mut stdout = std::io::stdout();
+            man.render(&mut stdout)?;
+            stdout.flush()?;
             Ok(())
         }
     };

@@ -18,7 +18,8 @@ pub trait AuthBackend: Send + Sync {
     async fn delete_user(&self, username: &Username) -> Result<()>;
     async fn change_password(&self, username: &Username, new_password: &str) -> Result<()>;
     async fn list_users(&self) -> Result<Vec<Username>>;
-    // Optional: SCRAM/APOP credential methods
+    async fn verify_bearer_token(&self, token: &str) -> Result<Username>;
+    // Optional: SCRAM/APOP credential methods; verify_bearer_token for JMAP/OAuth2
 }
 ```
 
@@ -35,17 +36,24 @@ All protocol servers receive an `Arc<dyn AuthBackend>` and call `authenticate()`
 | OAuth2/OIDC | Token introspection and JWKS validation (1,469 lines) | ✅ Complete |
 | PAM | Linux PAM integration (feature-gated) | ✅ Complete |
 
+All five backends are fully wired in `rusmes-server` via the `AuthBackendKind` config-driven
+factory — no `DummyAuthBackend` fallback in production.
+
 ### SASL Mechanisms (1,495 lines)
 PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256, XOAUTH2
 
 ### Security (885 lines)
 Brute-force protection, password strength validation, audit logging, IP rate limiting.
 
-> **Note**: Only file-based auth is fully integrated end-to-end in `rusmes-server`.
-> LDAP/SQL/OAuth2 backends work independently but fall back to `DummyAuthBackend`
-> in the main server binary.
-
 ## Dependencies
 - `rusmes-proto` - `Username` type
 - `async-trait` - async trait support
 - `anyhow` - error handling
+
+## Tests
+
+```bash
+cargo test -p rusmes-auth --all-features   # 250 tests (2 skipped)
+```
+
+Tests cover: all five authentication backends, full SASL mechanism flows (PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-256, XOAUTH2), brute-force protection, password strength validation, OAuth2/OIDC token verification including JWT validation, and audit logging.

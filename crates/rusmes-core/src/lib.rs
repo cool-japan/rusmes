@@ -93,6 +93,7 @@ pub mod matchers;
 pub mod queue;
 pub mod rate_limit;
 pub mod sieve;
+pub mod transport;
 
 mod matcher;
 mod processor;
@@ -101,18 +102,19 @@ mod mailet;
 mod router;
 
 pub use bounce::generate_bounce;
-pub use mailet::{Mailet, MailetAction, MailetConfig};
+pub use mailet::{Mailet, MailetAction, MailetConfig, MailetError, MailetErrorPolicy};
 pub use matcher::Matcher;
 pub use processor::{ProcessingStep, Processor};
 pub use queue::{
     FilesystemQueueStore, MailQueue, Priority, PriorityConfig, PriorityQueue, PriorityStats,
     QueueEntry, QueueEntryData, QueueStats, QueueStore,
 };
-pub use rate_limit::{RateLimitConfig, RateLimiter};
+pub use rate_limit::{RateLimitConfig, RateLimitKey, RateLimiter};
 pub use router::MailProcessorRouter;
 pub use sieve::{
     SieveAction, SieveCommand, SieveContext, SieveInterpreter, SieveScript, SieveTest,
 };
+pub use transport::{MailTransport, NullMailTransport, SmtpEnvelope};
 
 #[cfg(test)]
 pub mod test_helpers {

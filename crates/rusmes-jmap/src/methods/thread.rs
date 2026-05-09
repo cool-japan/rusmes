@@ -4,6 +4,8 @@
 //! - Thread/get - conversation threading
 //! - Thread/changes - detect thread changes
 
+use crate::methods::ensure_account_ownership;
+use crate::types::Principal;
 use rusmes_storage::MessageStore;
 use serde::{Deserialize, Serialize};
 
@@ -65,7 +67,9 @@ pub struct ThreadChangesResponse {
 pub async fn thread_get(
     request: ThreadGetRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<ThreadGetResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let list = Vec::new();
     let mut not_found = Vec::new();
 
@@ -93,7 +97,9 @@ pub async fn thread_get(
 pub async fn thread_changes(
     request: ThreadChangesRequest,
     _message_store: &dyn MessageStore,
+    principal: &Principal,
 ) -> anyhow::Result<ThreadChangesResponse> {
+    ensure_account_ownership(&request.account_id, principal)?;
     let since_state: u64 = request.since_state.parse().unwrap_or(0);
     let new_state = (since_state + 1).to_string();
 
@@ -253,6 +259,11 @@ fn highlight_snippet(text: &str, search_terms: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn test_principal() -> crate::types::Principal {
+        crate::types::admin_principal_for_tests()
+    }
+
     use super::*;
     use rusmes_storage::backends::filesystem::FilesystemBackend;
     use rusmes_storage::StorageBackend;
@@ -272,7 +283,9 @@ mod tests {
             properties: None,
         };
 
-        let response = thread_get(request, store.as_ref()).await.unwrap();
+        let response = thread_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.account_id, "acc1");
         assert_eq!(response.not_found.len(), 1);
     }
@@ -286,7 +299,9 @@ mod tests {
             properties: None,
         };
 
-        let response = thread_get(request, store.as_ref()).await.unwrap();
+        let response = thread_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 0);
     }
 
@@ -299,7 +314,9 @@ mod tests {
             max_changes: Some(50),
         };
 
-        let response = thread_changes(request, store.as_ref()).await.unwrap();
+        let response = thread_changes(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.old_state, "1");
         assert_eq!(response.new_state, "2");
         assert!(!response.has_more_changes);
@@ -369,7 +386,9 @@ mod tests {
             properties: Some(properties),
         };
 
-        let response = thread_get(request, store.as_ref()).await.unwrap();
+        let response = thread_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.list.len(), 0);
     }
 
@@ -382,7 +401,9 @@ mod tests {
             max_changes: Some(10),
         };
 
-        let response = thread_changes(request, store.as_ref()).await.unwrap();
+        let response = thread_changes(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.old_state, "100");
         assert_eq!(response.new_state, "101");
     }
@@ -434,14 +455,18 @@ mod tests {
             since_state: "5".to_string(),
             max_changes: None,
         };
-        let response1 = thread_changes(request1, store.as_ref()).await.unwrap();
+        let response1 = thread_changes(request1, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
 
         let request2 = ThreadChangesRequest {
             account_id: "acc1".to_string(),
             since_state: response1.new_state.clone(),
             max_changes: None,
         };
-        let response2 = thread_changes(request2, store.as_ref()).await.unwrap();
+        let response2 = thread_changes(request2, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
 
         assert!(response1.new_state < response2.new_state);
     }
@@ -468,7 +493,9 @@ mod tests {
             properties: None,
         };
 
-        let response = thread_get(request, store.as_ref()).await.unwrap();
+        let response = thread_get(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.not_found.len(), 3);
     }
 
@@ -506,7 +533,9 @@ mod tests {
             max_changes: None,
         };
 
-        let response = thread_changes(request, store.as_ref()).await.unwrap();
+        let response = thread_changes(request, store.as_ref(), &test_principal())
+            .await
+            .unwrap();
         assert_eq!(response.new_state, "1");
         assert!(response.created.is_empty());
         assert!(response.updated.is_empty());

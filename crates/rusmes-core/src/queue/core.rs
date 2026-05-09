@@ -1,11 +1,13 @@
 //! Mail queue management with retry logic
 
 use crate::queue::priority::Priority;
+use dashmap::DashMap;
 use rusmes_proto::{Mail, MailId};
 use rusmes_storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -162,6 +164,8 @@ pub struct MailQueue {
     entries: Arc<RwLock<HashMap<MailId, QueueEntry>>>,
     store: Option<Arc<dyn QueueStore>>,
     priority_config: Arc<RwLock<crate::queue::priority::PriorityConfig>>,
+    /// Per-recipient-domain message counter (domain → count)
+    domain_stats: Arc<DashMap<String, AtomicU64>>,
 }
 
 impl MailQueue {
@@ -173,6 +177,7 @@ impl MailQueue {
             priority_config: Arc::new(RwLock::new(
                 crate::queue::priority::PriorityConfig::default(),
             )),
+            domain_stats: Arc::new(DashMap::new()),
         }
     }
 
@@ -184,6 +189,7 @@ impl MailQueue {
             priority_config: Arc::new(RwLock::new(
                 crate::queue::priority::PriorityConfig::default(),
             )),
+            domain_stats: Arc::new(DashMap::new()),
         }
     }
 
@@ -195,6 +201,7 @@ impl MailQueue {
             entries: Arc::new(RwLock::new(HashMap::new())),
             store: None,
             priority_config: Arc::new(RwLock::new(priority_config)),
+            domain_stats: Arc::new(DashMap::new()),
         }
     }
 
@@ -207,6 +214,7 @@ impl MailQueue {
             entries: Arc::new(RwLock::new(HashMap::new())),
             store: Some(store),
             priority_config: Arc::new(RwLock::new(priority_config)),
+            domain_stats: Arc::new(DashMap::new()),
         }
     }
 
@@ -223,6 +231,37 @@ impl MailQueue {
             .read()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    /// Get a handle to the domain stats map (for metrics consumers such as rusmes-metrics)
+    pub fn domain_stats_map(&self) -> Arc<DashMap<String, AtomicU64>> {
+        Arc::clone(&self.domain_stats)
+    }
+
+    /// Return a snapshot of per-recipient-domain message counts.
+    ///
+    /// This is the primary API consumed by `rusmes-metrics` (Cluster 7) for Prometheus exposition.
+    pub fn queue_stats_per_domain(&self) -> HashMap<String, u64> {
+        self.domain_stats
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Increment domain counters for all recipient domains in the given mail.
+    fn record_domain_stats(&self, mail: &Mail) {
+        for recipient in mail.recipients() {
+            let domain = recipient.domain().as_str().to_owned();
+            if let Some(counter) = self.domain_stats.get(&domain) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Use entry API to avoid races
+                self.domain_stats
+                    .entry(domain)
+                    .or_insert_with(|| AtomicU64::new(0))
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Load all pending entries from storage on startup
@@ -255,6 +294,9 @@ impl MailQueue {
             config.calculate_priority(&mail, 0)
         };
 
+        // Record domain statistics before moving mail into entry
+        self.record_domain_stats(&mail);
+
         let entry = QueueEntry::new_with_priority(mail, priority);
 
         // Save to storage first (if available)
@@ -282,6 +324,10 @@ impl MailQueue {
         priority: Priority,
     ) -> anyhow::Result<()> {
         let mail_id = *mail.id();
+
+        // Record domain statistics
+        self.record_domain_stats(&mail);
+
         let entry = QueueEntry::new_with_priority(mail, priority);
 
         // Save to storage first (if available)
@@ -795,17 +841,21 @@ mod tests {
     use bytes::Bytes;
     use rusmes_proto::{HeaderMap, MessageBody, MimeMessage};
 
-    #[tokio::test]
-    async fn test_queue_enqueue_dequeue() {
-        let queue = MailQueue::new();
+    fn make_mail(sender: Option<&str>, recipients: Vec<&str>) -> Mail {
         let message = MimeMessage::new(HeaderMap::new(), MessageBody::Small(Bytes::from("Test")));
-        let mail = Mail::new(
-            Some("sender@example.com".parse().unwrap()),
-            vec!["recipient@example.com".parse().unwrap()],
+        Mail::new(
+            sender.and_then(|s| s.parse().ok()),
+            recipients.iter().filter_map(|r| r.parse().ok()).collect(),
             message,
             None,
             None,
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn test_queue_enqueue_dequeue() {
+        let queue = MailQueue::new();
+        let mail = make_mail(Some("sender@example.com"), vec!["recipient@example.com"]);
 
         let mail_id = *mail.id();
         queue.enqueue(mail).await.unwrap();
@@ -821,13 +871,7 @@ mod tests {
 
     #[test]
     fn test_retry_backoff() {
-        let mut entry = QueueEntry::new(Mail::new(
-            None,
-            vec![],
-            MimeMessage::new(HeaderMap::new(), MessageBody::Small(Bytes::from(""))),
-            None,
-            None,
-        ));
+        let mut entry = QueueEntry::new(make_mail(None, vec![]));
 
         entry.calculate_next_retry();
         assert_eq!(entry.attempts, 1);
@@ -838,5 +882,64 @@ mod tests {
         // After max attempts, should be bounced
         entry.attempts = 5;
         assert!(entry.is_bounced());
+    }
+
+    #[tokio::test]
+    async fn queue_priority_ordering() {
+        // Enqueue High, Low, Low, Normal → dequeue order: High, Normal, Low, Low
+        use crate::queue::priority::{Priority, PriorityQueue};
+        use rusmes_proto::MailId;
+
+        let mut queue = PriorityQueue::<&str>::with_default_config();
+
+        queue.enqueue(MailId::new(), "High msg", Priority::High);
+        queue.enqueue(MailId::new(), "Low msg 1", Priority::Low);
+        queue.enqueue(MailId::new(), "Low msg 2", Priority::Low);
+        queue.enqueue(MailId::new(), "Normal msg", Priority::Normal);
+
+        let (_, item1, p1) = queue.dequeue().unwrap();
+        assert_eq!(p1, Priority::High, "First dequeued should be High");
+        assert_eq!(item1, "High msg");
+
+        let (_, item2, p2) = queue.dequeue().unwrap();
+        assert_eq!(p2, Priority::Normal, "Second dequeued should be Normal");
+        assert_eq!(item2, "Normal msg");
+
+        let (_, _, p3) = queue.dequeue().unwrap();
+        assert_eq!(p3, Priority::Low, "Third dequeued should be Low");
+
+        let (_, _, p4) = queue.dequeue().unwrap();
+        assert_eq!(p4, Priority::Low, "Fourth dequeued should be Low");
+
+        assert!(queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queue_stats_per_domain_counts() {
+        let queue = MailQueue::new();
+
+        // Enqueue 5 messages to example.com
+        for _ in 0..5 {
+            let mail = make_mail(Some("sender@x.com"), vec!["a@example.com"]);
+            queue.enqueue(mail).await.unwrap();
+        }
+
+        // Enqueue 3 messages to example.org
+        for _ in 0..3 {
+            let mail = make_mail(Some("sender@x.com"), vec!["b@example.org"]);
+            queue.enqueue(mail).await.unwrap();
+        }
+
+        let stats = queue.queue_stats_per_domain();
+        assert_eq!(
+            stats.get("example.com").copied().unwrap_or(0),
+            5,
+            "example.com should have 5 messages"
+        );
+        assert_eq!(
+            stats.get("example.org").copied().unwrap_or(0),
+            3,
+            "example.org should have 3 messages"
+        );
     }
 }

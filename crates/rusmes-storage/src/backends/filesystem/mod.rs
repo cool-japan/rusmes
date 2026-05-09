@@ -1,10 +1,19 @@
 //! Filesystem-based storage backend using maildir format
 
+pub mod backup;
+pub mod compaction;
+pub mod events;
+pub mod locking;
+mod message_helpers;
+mod thread_ops;
+pub mod threading;
+
 use crate::traits::{MailboxStore, MessageStore, MetadataStore, StorageBackend};
 use crate::types::{
     Mailbox, MailboxCounters, MailboxId, MailboxPath, MessageFlags, MessageMetadata, Quota,
     SearchCriteria,
 };
+use crate::StorageEvent;
 use async_trait::async_trait;
 use rusmes_proto::{Mail, MessageId, Username};
 use std::collections::{HashMap, HashSet};
@@ -12,6 +21,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use threading::ThreadingEngine;
+use tokio::sync::{broadcast, Mutex as TokioMutex};
 
 /// Filesystem storage backend
 pub struct FilesystemBackend {
@@ -23,6 +34,15 @@ pub struct FilesystemBackend {
     hostname: String,
     pid: u32,
     delivery_counter: Arc<RwLock<u64>>,
+    /// Broadcast sender for storage events (capacity = 256).
+    event_tx: broadcast::Sender<StorageEvent>,
+    /// Per-MailboxId in-process mutex map.
+    ///
+    /// Serialises concurrent in-process operations on the same mailbox at the
+    /// Tokio level BEFORE the filesystem lock is attempted.  This prevents all
+    /// N in-process tasks from racing to acquire the same `fs2` file lock
+    /// simultaneously and exhausting the retry budget.
+    mailbox_locks: Arc<TokioMutex<HashMap<MailboxId, Arc<TokioMutex<()>>>>>,
 }
 
 impl FilesystemBackend {
@@ -43,6 +63,8 @@ impl FilesystemBackend {
             HashMap::new()
         });
 
+        let (event_tx, _) = events::new_event_channel();
+
         Self {
             base_path: base_path_buf,
             mailboxes: Arc::new(RwLock::new(mailboxes)),
@@ -52,7 +74,19 @@ impl FilesystemBackend {
             hostname,
             pid,
             delivery_counter: Arc::new(RwLock::new(0)),
+            event_tx,
+            mailbox_locks: Arc::new(TokioMutex::new(HashMap::new())),
         }
+    }
+
+    /// Subscribe to storage events from this backend.
+    pub fn event_stream_direct(&self) -> broadcast::Receiver<StorageEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Return the base path of the filesystem backend (used by compaction).
+    pub fn base_path(&self) -> &std::path::Path {
+        &self.base_path
     }
 
     /// Get the path for a mailbox
@@ -233,6 +267,7 @@ impl MaildirFilename {
     }
 }
 
+#[async_trait]
 impl StorageBackend for FilesystemBackend {
     fn mailbox_store(&self) -> Arc<dyn MailboxStore> {
         Arc::new(FilesystemMailboxStore {
@@ -251,6 +286,8 @@ impl StorageBackend for FilesystemBackend {
             hostname: self.hostname.clone(),
             pid: self.pid,
             delivery_counter: self.delivery_counter.clone(),
+            event_tx: self.event_tx.clone(),
+            mailbox_locks: self.mailbox_locks.clone(),
         })
     }
 
@@ -259,6 +296,63 @@ impl StorageBackend for FilesystemBackend {
             base_path: self.base_path.clone(),
             quotas: self.quotas.clone(),
         })
+    }
+
+    fn event_stream(&self) -> broadcast::Receiver<StorageEvent> {
+        self.event_tx.subscribe()
+    }
+
+    async fn compact_expunged(&self, older_than: std::time::Duration) -> anyhow::Result<usize> {
+        compaction::compact_trash(&self.base_path, older_than).await
+    }
+
+    fn as_filesystem_path(&self) -> Option<&std::path::Path> {
+        Some(&self.base_path)
+    }
+
+    async fn list_all_users(&self) -> anyhow::Result<Vec<Username>> {
+        let users_dir = self.base_path.join("users");
+        if !tokio::fs::try_exists(&users_dir).await.unwrap_or(false) {
+            // Fall back to enumerating users from in-memory mailbox metadata.
+            let mailboxes = self
+                .mailboxes
+                .read()
+                .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+            let mut seen: HashSet<Username> = HashSet::new();
+            for mailbox in mailboxes.values() {
+                seen.insert(mailbox.path().user().clone());
+            }
+            return Ok(seen.into_iter().collect());
+        }
+
+        let mut users = Vec::new();
+        let mut entries = tokio::fs::read_dir(&users_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(e) => {
+                    tracing::debug!("skipping unreadable entry under users/: {}", e);
+                    continue;
+                }
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => {
+                    tracing::debug!("skipping non-UTF8 user directory under users/");
+                    continue;
+                }
+            };
+            match Username::new(name) {
+                Ok(u) => users.push(u),
+                Err(e) => {
+                    tracing::debug!("skipping invalid username under users/: {}", e);
+                }
+            }
+        }
+        Ok(users)
     }
 }
 
@@ -490,6 +584,24 @@ struct FilesystemMessageStore {
     hostname: String,
     pid: u32,
     delivery_counter: Arc<RwLock<u64>>,
+    /// Broadcast sender for storage events.
+    event_tx: broadcast::Sender<StorageEvent>,
+    /// Shared per-MailboxId in-process lock map (same Arc as `FilesystemBackend`).
+    mailbox_locks: Arc<TokioMutex<HashMap<MailboxId, Arc<TokioMutex<()>>>>>,
+}
+
+impl FilesystemMessageStore {
+    /// Return (or lazily create) the in-process per-mailbox `Arc<TokioMutex<()>>`.
+    ///
+    /// This is used in `append_message` to serialise concurrent in-process
+    /// operations at the Tokio level *before* the `fs2` file lock is attempted,
+    /// preventing N tasks from all racing against the filesystem lock at once.
+    async fn per_mailbox_mutex(&self, mailbox_id: &MailboxId) -> Arc<TokioMutex<()>> {
+        let mut map = self.mailbox_locks.lock().await;
+        map.entry(*mailbox_id)
+            .or_insert_with(|| Arc::new(TokioMutex::new(())))
+            .clone()
+    }
 }
 
 #[async_trait]
@@ -502,8 +614,8 @@ impl MessageStore for FilesystemMessageStore {
         let message_id = *message.message_id();
         let message_size = message.size();
 
-        // Get the mailbox to determine the user
-        let user = {
+        // Get the mailbox to determine the user and mailbox name for events.
+        let (user, mailbox_name) = {
             let mailboxes = self
                 .mailboxes
                 .read()
@@ -511,7 +623,8 @@ impl MessageStore for FilesystemMessageStore {
             let mailbox = mailboxes
                 .get(mailbox_id)
                 .ok_or_else(|| anyhow::anyhow!("Mailbox not found"))?;
-            mailbox.path().user().clone()
+            let name = mailbox.path().name().unwrap_or("INBOX").to_string();
+            (mailbox.path().user().clone(), name)
         };
 
         // Check quota before appending
@@ -531,7 +644,8 @@ impl MessageStore for FilesystemMessageStore {
             return Err(anyhow::anyhow!("Quota exceeded: cannot append message"));
         }
 
-        // Get unique counter for this delivery
+        // Get unique counter for this delivery — done before acquiring the dir
+        // lock so the atomic counter is always advancing even on lock failure.
         let counter = {
             let mut c = self
                 .delivery_counter
@@ -549,12 +663,22 @@ impl MessageStore for FilesystemMessageStore {
             .join("mailboxes")
             .join(mailbox_id.to_string());
 
+        // Acquire the in-process per-mailbox Tokio mutex FIRST.
+        // This serialises concurrent in-process tasks at the Tokio level so that
+        // only one task at a time tries to acquire the underlying fs2 file lock.
+        // Without this, N simultaneous tokio::spawn tasks all race against the
+        // same lockfile and exhaust the 2s retry budget.
+        let _inproc_guard = self.per_mailbox_mutex(mailbox_id).await.lock_owned().await;
+
+        // Acquire exclusive directory lock before any filesystem mutation.
+        let _lock = locking::acquire_dir_lock(&mailbox_dir).await?;
+
         // Step 1: Write to tmp/ directory (atomic delivery part 1)
         let tmp_path = mailbox_dir.join("tmp").join(&filename);
         tokio::fs::create_dir_all(mailbox_dir.join("tmp")).await?;
 
         // Serialize message to disk
-        let message_data = serialize_message_to_bytes(&message)?;
+        let message_data = serialize_message_to_bytes(&message).await?;
         tokio::fs::write(&tmp_path, &message_data).await?;
 
         // Step 2: Rename to new/ directory (atomic delivery part 2)
@@ -570,25 +694,44 @@ impl MessageStore for FilesystemMessageStore {
             .insert(message_id, message.clone());
 
         // Update quota after successful append
-        {
+        let uid = {
             let mut quotas = self
                 .quotas
                 .write()
                 .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
             let user_quota = quotas
-                .entry(user)
+                .entry(user.clone())
                 .or_insert(Quota::new(0, 1024 * 1024 * 1024));
             user_quota.used += message_size as u64;
-        }
+            // Use counter as a stable UID proxy (monotonically increasing).
+            counter as u32
+        };
+
+        // Assign RFC 5256 thread ID while the mailbox directory lock is still held.
+        let thread_id: Option<String> = {
+            let engine = ThreadingEngine::new(&mailbox_dir);
+            match engine.assign_thread_id(&message).await {
+                Ok(tid) => Some(tid),
+                Err(e) => {
+                    tracing::warn!("Threading engine failed for message {}: {}", message_id, e);
+                    None
+                }
+            }
+        };
 
         // Create metadata
-        let metadata = MessageMetadata::new(
+        let metadata = MessageMetadata::new_with_thread_id(
             message_id,
             *mailbox_id,
-            1, // UID would be properly generated from mailbox state
+            uid,
             MessageFlags::new(),
             message.size(),
+            thread_id,
         );
+
+        // Fire MessageStored event after the write commits.
+        // Lock is still held here (dropped at end of scope), which is correct.
+        events::fire_stored(&self.event_tx, user.to_string(), mailbox_name, uid);
 
         Ok(metadata)
     }
@@ -717,13 +860,138 @@ impl MessageStore for FilesystemMessageStore {
     }
 
     async fn delete_messages(&self, message_ids: &[MessageId]) -> anyhow::Result<()> {
-        let mut messages = self
-            .messages
-            .write()
-            .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
-        for id in message_ids {
-            messages.remove(id);
+        // Remove from in-memory cache.
+        {
+            let mut messages = self
+                .messages
+                .write()
+                .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+            for id in message_ids {
+                messages.remove(id);
+            }
         }
+
+        // Remove from disk: scan all mailbox directories for files carrying
+        // an `X-Rusmes-Message-Id` header matching one of the supplied IDs.
+        let mailboxes_dir = self.base_path.join("mailboxes");
+        if !tokio::fs::try_exists(&mailboxes_dir).await.unwrap_or(false) {
+            // Fire expunged events even when no disk work was needed.
+            for _ in message_ids {
+                events::fire_expunged(&self.event_tx, String::new(), String::new(), 0);
+            }
+            return Ok(());
+        }
+
+        // Build a set of IDs to delete for quick membership testing.
+        let ids_to_delete: std::collections::HashSet<MessageId> =
+            message_ids.iter().cloned().collect();
+
+        let mut mailbox_entries = tokio::fs::read_dir(&mailboxes_dir).await?;
+        while let Some(mbx_entry) = mailbox_entries.next_entry().await? {
+            let mbx_file_type = match mbx_entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !mbx_file_type.is_dir() {
+                continue;
+            }
+            let mailbox_dir = mbx_entry.path();
+
+            // Derive the MailboxId from the directory name (UUID string) so we
+            // can acquire the in-process per-mailbox Tokio mutex before taking
+            // the filesystem lock, matching `append_message` semantics.
+            let dir_name = mailbox_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let maybe_inproc_guard = if let Ok(uuid) = uuid::Uuid::parse_str(dir_name) {
+                let mid = MailboxId::from_uuid(uuid);
+                let mutex = self.per_mailbox_mutex(&mid).await;
+                Some(mutex.lock_owned().await)
+            } else {
+                None
+            };
+
+            // Acquire the exclusive directory lock once per mailbox directory
+            // (not per file) so that the entire expunge scan+delete is atomic
+            // with respect to concurrent deliveries into the same folder.
+            let _mailbox_lock = match locking::acquire_dir_lock(&mailbox_dir).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not acquire dir lock for {:?} during expunge: {}",
+                        mailbox_dir,
+                        e
+                    );
+                    drop(maybe_inproc_guard);
+                    continue;
+                }
+            };
+
+            for subdir in ["new", "cur"] {
+                let msg_dir = mailbox_dir.join(subdir);
+                if !tokio::fs::try_exists(&msg_dir).await.unwrap_or(false) {
+                    continue;
+                }
+
+                let mut msg_entries = match tokio::fs::read_dir(&msg_dir).await {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                while let Some(msg_entry) = msg_entries.next_entry().await? {
+                    let msg_ft = match msg_entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
+                    if !msg_ft.is_file() {
+                        continue;
+                    }
+
+                    let file_path = msg_entry.path();
+                    let data = match tokio::fs::read(&file_path).await {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+
+                    let mime = match rusmes_proto::MimeMessage::parse_from_bytes(&data) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    let stored_id =
+                        mime.headers()
+                            .get_first("x-rusmes-message-id")
+                            .and_then(|id_str| {
+                                uuid::Uuid::from_str(id_str.trim())
+                                    .ok()
+                                    .map(MessageId::from_uuid)
+                            });
+
+                    if let Some(sid) = stored_id {
+                        if ids_to_delete.contains(&sid) {
+                            // Remove the file. The mailbox-dir lock is already held
+                            // above; no inner re-acquire needed.
+                            if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                                tracing::warn!(
+                                    "Failed to delete message file {:?}: {}",
+                                    file_path,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Deleted message file {:?} for message {}",
+                                    file_path,
+                                    sid
+                                );
+                            }
+                            events::fire_expunged(&self.event_tx, String::new(), String::new(), 0);
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -732,22 +1000,214 @@ impl MessageStore for FilesystemMessageStore {
         message_ids: &[MessageId],
         flags: MessageFlags,
     ) -> anyhow::Result<()> {
-        // For each message, update its filename to reflect the new flags
-        for message_id in message_ids {
-            let messages = self
-                .messages
-                .read()
-                .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
-            if messages.get(message_id).is_some() {
-                // In a full implementation, we would:
-                // 1. Find the file in cur/ or new/
-                // 2. Rename it with the new flags encoding
-                // 3. Update in-memory metadata
-                // For now, just store the flags intention
-                tracing::debug!("Setting flags {:?} for message {:?}", flags, message_id);
+        let mailboxes_dir = self.base_path.join("mailboxes");
+        if !tokio::fs::try_exists(&mailboxes_dir).await.unwrap_or(false) {
+            return Ok(());
+        }
+
+        let ids_to_flag: std::collections::HashSet<MessageId> =
+            message_ids.iter().cloned().collect();
+
+        let new_flag_suffix = MaildirFilename::encode_flags(&flags);
+
+        let mut mailbox_entries = tokio::fs::read_dir(&mailboxes_dir).await?;
+        while let Some(mbx_entry) = mailbox_entries.next_entry().await? {
+            let mbx_file_type = match mbx_entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !mbx_file_type.is_dir() {
+                continue;
+            }
+            let mailbox_dir = mbx_entry.path();
+
+            // Messages in new/ have no flags; mark-as-seen moves them to cur/.
+            // Messages in cur/ already carry flag suffixes; rename in place.
+            for subdir in ["new", "cur"] {
+                let msg_dir = mailbox_dir.join(subdir);
+                if !tokio::fs::try_exists(&msg_dir).await.unwrap_or(false) {
+                    continue;
+                }
+
+                let mut msg_entries = match tokio::fs::read_dir(&msg_dir).await {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                while let Some(msg_entry) = msg_entries.next_entry().await? {
+                    let msg_ft = match msg_entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
+                    if !msg_ft.is_file() {
+                        continue;
+                    }
+
+                    let file_path = msg_entry.path();
+                    let data = match tokio::fs::read(&file_path).await {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+
+                    let mime = match rusmes_proto::MimeMessage::parse_from_bytes(&data) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    let stored_id =
+                        mime.headers()
+                            .get_first("x-rusmes-message-id")
+                            .and_then(|id_str| {
+                                uuid::Uuid::from_str(id_str.trim())
+                                    .ok()
+                                    .map(MessageId::from_uuid)
+                            });
+
+                    if let Some(sid) = stored_id {
+                        if !ids_to_flag.contains(&sid) {
+                            continue;
+                        }
+
+                        // Determine target directory: always cur/ when flags are set.
+                        let target_dir = mailbox_dir.join("cur");
+                        if let Err(e) = tokio::fs::create_dir_all(&target_dir).await {
+                            tracing::warn!("Failed to create cur/ dir {:?}: {}", target_dir, e);
+                            continue;
+                        }
+
+                        let old_filename = match file_path.file_name().and_then(|n| n.to_str()) {
+                            Some(n) => n.to_string(),
+                            None => continue,
+                        };
+
+                        let base = MaildirFilename::base_name(&old_filename).to_string();
+                        let new_filename = format!("{}{}", base, new_flag_suffix);
+                        let new_path = target_dir.join(&new_filename);
+
+                        // Skip rename if source and destination are identical.
+                        if file_path == new_path {
+                            continue;
+                        }
+
+                        // Acquire directory lock before rename.
+                        let _lock = match locking::acquire_dir_lock(&mailbox_dir).await {
+                            Ok(l) => l,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Could not acquire dir lock for {:?}: {}",
+                                    mailbox_dir,
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = tokio::fs::rename(&file_path, &new_path).await {
+                            tracing::warn!(
+                                "Failed to rename {:?} -> {:?}: {}",
+                                file_path,
+                                new_path,
+                                e
+                            );
+                        } else {
+                            tracing::debug!(
+                                "set_flags: renamed {:?} -> {:?} for message {}",
+                                file_path,
+                                new_path,
+                                sid
+                            );
+                        }
+                    }
+                }
             }
         }
+
         Ok(())
+    }
+
+    async fn get_message_flags(
+        &self,
+        message_id: &MessageId,
+    ) -> anyhow::Result<Option<MessageFlags>> {
+        let mailboxes_dir = self.base_path.join("mailboxes");
+        if !tokio::fs::try_exists(&mailboxes_dir).await.unwrap_or(false) {
+            return Ok(None);
+        }
+
+        let mut mailbox_entries = tokio::fs::read_dir(&mailboxes_dir).await?;
+        while let Some(mbx_entry) = mailbox_entries.next_entry().await? {
+            let mbx_file_type = match mbx_entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if !mbx_file_type.is_dir() {
+                continue;
+            }
+            let mailbox_dir = mbx_entry.path();
+
+            for subdir in ["new", "cur"] {
+                let msg_dir = mailbox_dir.join(subdir);
+                if !tokio::fs::try_exists(&msg_dir).await.unwrap_or(false) {
+                    continue;
+                }
+
+                let mut msg_entries = match tokio::fs::read_dir(&msg_dir).await {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                while let Some(msg_entry) = msg_entries.next_entry().await? {
+                    let msg_ft = match msg_entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
+                    if !msg_ft.is_file() {
+                        continue;
+                    }
+
+                    let file_path = msg_entry.path();
+                    let data = match tokio::fs::read(&file_path).await {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+
+                    let mime = match rusmes_proto::MimeMessage::parse_from_bytes(&data) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    let stored_id =
+                        mime.headers()
+                            .get_first("x-rusmes-message-id")
+                            .and_then(|id_str| {
+                                uuid::Uuid::from_str(id_str.trim())
+                                    .ok()
+                                    .map(MessageId::from_uuid)
+                            });
+
+                    if let Some(sid) = stored_id {
+                        if &sid == message_id {
+                            let filename = match file_path.file_name().and_then(|n| n.to_str()) {
+                                Some(n) => n.to_string(),
+                                None => continue,
+                            };
+                            let flags = MaildirFilename::decode_flags(&filename);
+                            return Ok(Some(flags));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn get_message_thread_id(
+        &self,
+        message_id: &MessageId,
+    ) -> anyhow::Result<Option<String>> {
+        let mailboxes_dir = self.base_path.join("mailboxes");
+        thread_ops::scan_for_thread_id(&mailboxes_dir, message_id).await
     }
 
     async fn search(
@@ -824,6 +1284,7 @@ impl MessageStore for FilesystemMessageStore {
                                     mailbox_id,
                                     uid_counter,
                                     filename,
+                                    &mailbox_dir,
                                 )
                                 .await
                             {
@@ -858,6 +1319,7 @@ impl MessageStore for FilesystemMessageStore {
                                     mailbox_id,
                                     uid_counter,
                                     filename,
+                                    &mailbox_dir,
                                 )
                                 .await
                             {
@@ -966,13 +1428,16 @@ impl FilesystemMessageStore {
         Ok(results)
     }
 
-    /// Parse a message from a maildir file and return metadata
+    /// Parse a message from a maildir file and return metadata.
+    ///
+    /// `mailbox_dir` is used to look up the per-mailbox thread index.
     async fn parse_message_from_file(
         &self,
         file_path: &std::path::Path,
         mailbox_id: &MailboxId,
         uid: u32,
         filename: &str,
+        mailbox_dir: &std::path::Path,
     ) -> anyhow::Result<MessageMetadata> {
         // Read the file contents
         let data = tokio::fs::read(file_path).await?;
@@ -980,11 +1445,17 @@ impl FilesystemMessageStore {
         // Parse the message
         let mime_message = rusmes_proto::MimeMessage::parse_from_bytes(&data)?;
 
-        // Extract the stored MessageId from X-Rusmes-Message-Id header if present
+        // Extract headers before consuming mime_message.
         let stored_message_id = mime_message
             .headers()
             .get_first("x-rusmes-message-id")
             .and_then(|id_str| uuid::Uuid::from_str(id_str).ok().map(MessageId::from_uuid));
+
+        // Extract RFC 5322 Message-ID for thread index lookup (before mime_message is moved).
+        let rfc_message_id_opt: Option<String> = mime_message
+            .headers()
+            .get_first("message-id")
+            .map(threading::strip_angle_brackets);
 
         // Create a Mail object with the correct MessageId
         let mail = if let Some(msg_id) = stored_message_id {
@@ -1014,8 +1485,23 @@ impl FilesystemMessageStore {
             .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?
             .insert(message_id, mail);
 
-        // Create metadata
-        let metadata = MessageMetadata::new(message_id, *mailbox_id, uid, flags, size);
+        // Look up thread_id in the per-mailbox index using the RFC 5322 Message-ID.
+        let thread_id: Option<String> = if let Some(ref rfc_id) = rfc_message_id_opt {
+            let engine = ThreadingEngine::new(mailbox_dir);
+            engine.get_thread_id(rfc_id).await.unwrap_or(None)
+        } else {
+            None
+        };
+
+        // Create metadata with thread_id
+        let metadata = MessageMetadata::new_with_thread_id(
+            message_id,
+            *mailbox_id,
+            uid,
+            flags,
+            size,
+            thread_id,
+        );
 
         Ok(metadata)
     }
@@ -1094,7 +1580,7 @@ impl MetadataStore for FilesystemMetadataStore {
     }
 }
 
-/// Helper: Check if a message matches search criteria
+/// Check whether a message matches the given search criteria.
 fn matches_criteria_helper<'a>(
     store: &'a FilesystemMessageStore,
     metadata: &'a MessageMetadata,
@@ -1109,22 +1595,38 @@ fn matches_criteria_helper<'a>(
             SearchCriteria::Unflagged => Ok(!metadata.flags().is_flagged()),
             SearchCriteria::Deleted => Ok(metadata.flags().is_deleted()),
             SearchCriteria::Undeleted => Ok(!metadata.flags().is_deleted()),
-
-            // Content-based searches require loading the full message
             SearchCriteria::From(pattern) => {
-                matches_header_pattern_helper(store, metadata, "from", pattern).await
+                if let Some(mail) = store.get_message(metadata.message_id()).await? {
+                    if let Some(v) = mail.message().headers().get_first("from") {
+                        return Ok(v.to_lowercase().contains(&pattern.to_lowercase()));
+                    }
+                }
+                Ok(false)
             }
             SearchCriteria::To(pattern) => {
-                matches_header_pattern_helper(store, metadata, "to", pattern).await
+                if let Some(mail) = store.get_message(metadata.message_id()).await? {
+                    if let Some(v) = mail.message().headers().get_first("to") {
+                        return Ok(v.to_lowercase().contains(&pattern.to_lowercase()));
+                    }
+                }
+                Ok(false)
             }
             SearchCriteria::Subject(pattern) => {
-                matches_header_pattern_helper(store, metadata, "subject", pattern).await
+                if let Some(mail) = store.get_message(metadata.message_id()).await? {
+                    if let Some(v) = mail.message().headers().get_first("subject") {
+                        return Ok(v.to_lowercase().contains(&pattern.to_lowercase()));
+                    }
+                }
+                Ok(false)
             }
             SearchCriteria::Body(pattern) => {
-                matches_body_pattern_helper(store, metadata, pattern).await
+                if let Some(mail) = store.get_message(metadata.message_id()).await? {
+                    if let Ok(text) = mail.message().extract_text().await {
+                        return Ok(text.to_lowercase().contains(&pattern.to_lowercase()));
+                    }
+                }
+                Ok(false)
             }
-
-            // Logical operators
             SearchCriteria::And(sub_criteria) => {
                 for sub in sub_criteria {
                     if !matches_criteria_helper(store, metadata, sub).await? {
@@ -1141,512 +1643,20 @@ fn matches_criteria_helper<'a>(
                 }
                 Ok(false)
             }
-            SearchCriteria::Not(sub_criteria) => {
-                Ok(!matches_criteria_helper(store, metadata, sub_criteria).await?)
-            }
+            SearchCriteria::Not(sub) => Ok(!matches_criteria_helper(store, metadata, sub).await?),
         }
     })
 }
 
-/// Helper: Check if a header matches a pattern
-async fn matches_header_pattern_helper(
-    store: &FilesystemMessageStore,
-    metadata: &MessageMetadata,
-    header_name: &str,
-    pattern: &str,
-) -> anyhow::Result<bool> {
-    // Load the message from storage
-    if let Some(mail) = store.get_message(metadata.message_id()).await? {
-        if let Some(header_value) = mail.message().headers().get_first(header_name) {
-            // Case-insensitive substring match
-            return Ok(header_value
-                .to_lowercase()
-                .contains(&pattern.to_lowercase()));
-        }
-    }
-    Ok(false)
-}
-
-/// Helper: Check if message body matches a pattern
-async fn matches_body_pattern_helper(
-    store: &FilesystemMessageStore,
-    metadata: &MessageMetadata,
-    pattern: &str,
-) -> anyhow::Result<bool> {
-    // Load the message from storage
-    if let Some(mail) = store.get_message(metadata.message_id()).await? {
-        // Extract text from message body
-        if let Ok(text) = mail.message().extract_text() {
-            // Case-insensitive substring match
-            return Ok(text.to_lowercase().contains(&pattern.to_lowercase()));
-        }
-    }
-    Ok(false)
-}
-
-/// Helper function to serialize a Mail object to bytes for storage
-fn serialize_message_to_bytes(mail: &Mail) -> anyhow::Result<Vec<u8>> {
-    let message = mail.message();
-    let headers = message.headers();
-    let body = message.body();
-
-    let mut output = Vec::new();
-
-    // Write custom header with MessageId for retrieval
-    // This is stored as X-Rusmes-Message-Id to avoid conflicts
-    output.extend_from_slice(b"X-Rusmes-Message-Id: ");
-    output.extend_from_slice(mail.message_id().to_string().as_bytes());
-    output.extend_from_slice(b"\r\n");
-
-    // Write original headers
-    for (name, values) in headers.iter() {
-        for value in values {
-            output.extend_from_slice(name.as_bytes());
-            output.extend_from_slice(b": ");
-            output.extend_from_slice(value.as_bytes());
-            output.extend_from_slice(b"\r\n");
-        }
-    }
-
-    // Blank line separating headers from body
-    output.extend_from_slice(b"\r\n");
-
-    // Write body
-    match body {
-        rusmes_proto::MessageBody::Small(bytes) => {
-            output.extend_from_slice(bytes);
-        }
-        rusmes_proto::MessageBody::Large(_) => {
-            // For large messages, we'd need to stream
-            // For now, just return empty
-        }
-    }
-
-    Ok(output)
+/// Serialize a [`Mail`] object to raw maildir bytes.
+///
+/// Thin wrapper around [`message_helpers::serialize_message_to_bytes`] so call
+/// sites within this module continue to work unchanged.
+#[inline]
+async fn serialize_message_to_bytes(mail: &Mail) -> anyhow::Result<Vec<u8>> {
+    message_helpers::serialize_message_to_bytes(mail).await
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_filesystem_backend() {
-        let backend = FilesystemBackend::new("/tmp/rusmes-test");
-        let mailbox_store = backend.mailbox_store();
-
-        let user: Username = "testuser".parse().unwrap();
-        let path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-
-        let mailbox_id = mailbox_store.create_mailbox(&path).await.unwrap();
-        let mailbox = mailbox_store.get_mailbox(&mailbox_id).await.unwrap();
-
-        assert!(mailbox.is_some());
-        assert_eq!(mailbox.unwrap().path().user(), &user);
-    }
-
-    #[tokio::test]
-    async fn test_get_mailbox_messages() {
-        use rusmes_proto::{MailAddress, MimeMessage};
-
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-        let backend = FilesystemBackend::new(&temp_dir);
-        let mailbox_store = backend.mailbox_store();
-        let message_store = backend.message_store();
-
-        let user: Username = "testuser".parse().unwrap();
-        let path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-
-        // Create mailbox
-        let mailbox_id = mailbox_store.create_mailbox(&path).await.unwrap();
-
-        // Create and append a test message
-        let headers = rusmes_proto::HeaderMap::new();
-        let body = rusmes_proto::MessageBody::Small(bytes::Bytes::from("Test message body"));
-        let mime_message = MimeMessage::new(headers, body);
-
-        let sender = Some("sender@example.com".parse::<MailAddress>().unwrap());
-        let recipients = vec!["testuser@localhost".parse::<MailAddress>().unwrap()];
-        let mail = rusmes_proto::Mail::new(sender, recipients, mime_message, None, None);
-
-        // Append message
-        let metadata = message_store
-            .append_message(&mailbox_id, mail)
-            .await
-            .unwrap();
-        assert_eq!(metadata.mailbox_id(), &mailbox_id);
-
-        // Get mailbox messages
-        let messages = message_store
-            .get_mailbox_messages(&mailbox_id)
-            .await
-            .unwrap();
-
-        // Verify we got the message back
-        assert_eq!(messages.len(), 1, "Should have exactly 1 message");
-        let msg = &messages[0];
-        assert_eq!(msg.mailbox_id(), &mailbox_id);
-        assert_eq!(msg.uid(), 1, "First message should have UID 1");
-        assert!(msg.size() > 0, "Message should have non-zero size");
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_get_mailbox_messages_multiple() {
-        use rusmes_proto::{MailAddress, MimeMessage};
-
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-        let backend = FilesystemBackend::new(&temp_dir);
-        let mailbox_store = backend.mailbox_store();
-        let message_store = backend.message_store();
-
-        let user: Username = "testuser".parse().unwrap();
-        let path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-
-        // Create mailbox
-        let mailbox_id = mailbox_store.create_mailbox(&path).await.unwrap();
-
-        // Append multiple messages
-        for i in 0..5 {
-            let headers = rusmes_proto::HeaderMap::new();
-            let body = rusmes_proto::MessageBody::Small(bytes::Bytes::from(format!(
-                "Test message body {}",
-                i
-            )));
-            let mime_message = MimeMessage::new(headers, body);
-
-            let sender = Some(
-                format!("sender{}@example.com", i)
-                    .parse::<MailAddress>()
-                    .unwrap(),
-            );
-            let recipients = vec!["testuser@localhost".parse::<MailAddress>().unwrap()];
-            let mail = rusmes_proto::Mail::new(sender, recipients, mime_message, None, None);
-
-            message_store
-                .append_message(&mailbox_id, mail)
-                .await
-                .unwrap();
-        }
-
-        // Get mailbox messages
-        let messages = message_store
-            .get_mailbox_messages(&mailbox_id)
-            .await
-            .unwrap();
-
-        // Verify we got all messages
-        assert_eq!(messages.len(), 5, "Should have exactly 5 messages");
-
-        // Verify UIDs are sequential
-        for (i, msg) in messages.iter().enumerate() {
-            assert_eq!(
-                msg.uid(),
-                (i + 1) as u32,
-                "Message {} should have UID {}",
-                i,
-                i + 1
-            );
-            assert_eq!(msg.mailbox_id(), &mailbox_id);
-            assert!(msg.size() > 0, "Message should have non-zero size");
-        }
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_get_mailbox_messages_with_flags() {
-        use rusmes_proto::{MailAddress, MimeMessage};
-
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-        let backend = FilesystemBackend::new(&temp_dir);
-        let mailbox_store = backend.mailbox_store();
-        let message_store = backend.message_store();
-
-        let user: Username = "testuser".parse().unwrap();
-        let path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-
-        // Create mailbox
-        let mailbox_id = mailbox_store.create_mailbox(&path).await.unwrap();
-
-        // Append a message
-        let headers = rusmes_proto::HeaderMap::new();
-        let body = rusmes_proto::MessageBody::Small(bytes::Bytes::from("Test message with flags"));
-        let mime_message = MimeMessage::new(headers, body);
-
-        let sender = Some("sender@example.com".parse::<MailAddress>().unwrap());
-        let recipients = vec!["testuser@localhost".parse::<MailAddress>().unwrap()];
-        let mail = rusmes_proto::Mail::new(sender, recipients, mime_message, None, None);
-
-        let _metadata = message_store
-            .append_message(&mailbox_id, mail)
-            .await
-            .unwrap();
-
-        // Initially, message should be in new/ directory with no flags
-        let messages = message_store
-            .get_mailbox_messages(&mailbox_id)
-            .await
-            .unwrap();
-        assert_eq!(messages.len(), 1);
-        let initial_flags = messages[0].flags();
-        assert!(
-            !initial_flags.is_seen(),
-            "New message should not be marked as seen"
-        );
-
-        // Manually move the message to cur/ with flags to simulate IMAP flag setting
-        let mailbox_dir = temp_dir.join("mailboxes").join(mailbox_id.to_string());
-        let new_dir = mailbox_dir.join("new");
-        let cur_dir = mailbox_dir.join("cur");
-
-        // Find the message file
-        let mut entries = tokio::fs::read_dir(&new_dir).await.unwrap();
-        if let Some(entry) = entries.next_entry().await.unwrap() {
-            let old_filename = entry.file_name();
-            let old_path = new_dir.join(&old_filename);
-
-            // Create new filename with Seen flag (:2,S)
-            let base_name = old_filename.to_str().unwrap();
-            let new_filename = format!("{}:2,S", base_name.split(":2,").next().unwrap());
-            let new_path = cur_dir.join(&new_filename);
-
-            // Move the file
-            tokio::fs::rename(&old_path, &new_path).await.unwrap();
-        }
-
-        // Re-read messages - should now see the Seen flag
-        let messages = message_store
-            .get_mailbox_messages(&mailbox_id)
-            .await
-            .unwrap();
-        assert_eq!(messages.len(), 1);
-        let updated_flags = messages[0].flags();
-        assert!(
-            updated_flags.is_seen(),
-            "Message should now be marked as seen"
-        );
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_get_message_from_disk() {
-        use rusmes_proto::{MailAddress, MimeMessage};
-
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-        let backend = FilesystemBackend::new(&temp_dir);
-        let mailbox_store = backend.mailbox_store();
-        let message_store = backend.message_store();
-
-        let user: Username = "testuser".parse().unwrap();
-        let path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-
-        // Create mailbox
-        let mailbox_id = mailbox_store.create_mailbox(&path).await.unwrap();
-
-        // Create and append a test message
-        let headers = rusmes_proto::HeaderMap::new();
-        let body =
-            rusmes_proto::MessageBody::Small(bytes::Bytes::from("Test message for disk retrieval"));
-        let mime_message = MimeMessage::new(headers, body);
-
-        let sender = Some("sender@example.com".parse::<MailAddress>().unwrap());
-        let recipients = vec!["testuser@localhost".parse::<MailAddress>().unwrap()];
-        let mail = rusmes_proto::Mail::new(sender, recipients, mime_message, None, None);
-
-        // Store the message ID before appending
-        let message_id = *mail.message_id();
-
-        // Append message
-        let _metadata = message_store
-            .append_message(&mailbox_id, mail)
-            .await
-            .unwrap();
-
-        // Create a new backend instance to simulate a fresh start (empty cache)
-        let backend2 = FilesystemBackend::new(&temp_dir);
-        let message_store2 = backend2.message_store();
-
-        // Try to retrieve the message - should load from disk
-        let retrieved_mail = message_store2.get_message(&message_id).await.unwrap();
-
-        // Verify we got the message back
-        assert!(
-            retrieved_mail.is_some(),
-            "Should retrieve message from disk"
-        );
-        let retrieved = retrieved_mail.unwrap();
-        assert_eq!(
-            retrieved.message_id(),
-            &message_id,
-            "Message ID should match"
-        );
-        assert!(
-            retrieved.size() > 0,
-            "Retrieved message should have non-zero size"
-        );
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_mailbox_metadata_persistence() {
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-
-        let user: Username = "testuser".parse().unwrap();
-        let inbox_path = MailboxPath::new(user.clone(), vec!["INBOX".to_string()]);
-        let sent_path = MailboxPath::new(user.clone(), vec!["Sent".to_string()]);
-
-        let mailbox_id;
-        let sent_id;
-
-        // Create mailboxes in first backend instance
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            mailbox_id = mailbox_store.create_mailbox(&inbox_path).await.unwrap();
-            sent_id = mailbox_store.create_mailbox(&sent_path).await.unwrap();
-
-            // Verify mailboxes exist
-            let mailbox = mailbox_store.get_mailbox(&mailbox_id).await.unwrap();
-            assert!(mailbox.is_some());
-            assert_eq!(mailbox.unwrap().path().name(), Some("INBOX"));
-
-            let sent_mailbox = mailbox_store.get_mailbox(&sent_id).await.unwrap();
-            assert!(sent_mailbox.is_some());
-            assert_eq!(sent_mailbox.unwrap().path().name(), Some("Sent"));
-
-            // Verify metadata file was created
-            let metadata_file = temp_dir
-                .join("users")
-                .join(user.as_str())
-                .join("mailboxes.json");
-            assert!(tokio::fs::try_exists(&metadata_file).await.unwrap());
-        }
-
-        // Create new backend instance (simulates server restart)
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            // Verify mailboxes still exist after "restart"
-            let mailbox = mailbox_store.get_mailbox(&mailbox_id).await.unwrap();
-            assert!(mailbox.is_some(), "INBOX should be restored from disk");
-            assert_eq!(mailbox.unwrap().path().name(), Some("INBOX"));
-
-            let sent_mailbox = mailbox_store.get_mailbox(&sent_id).await.unwrap();
-            assert!(sent_mailbox.is_some(), "Sent should be restored from disk");
-            assert_eq!(sent_mailbox.unwrap().path().name(), Some("Sent"));
-
-            // List mailboxes should return both
-            let mailboxes = mailbox_store.list_mailboxes(&user).await.unwrap();
-            assert_eq!(mailboxes.len(), 2, "Should have 2 mailboxes after restart");
-
-            // Test delete and verify persistence
-            mailbox_store.delete_mailbox(&sent_id).await.unwrap();
-            let deleted_mailbox = mailbox_store.get_mailbox(&sent_id).await.unwrap();
-            assert!(deleted_mailbox.is_none(), "Sent mailbox should be deleted");
-        }
-
-        // Create third backend instance to verify deletion was persisted
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            // INBOX should still exist
-            let mailbox = mailbox_store.get_mailbox(&mailbox_id).await.unwrap();
-            assert!(mailbox.is_some(), "INBOX should still exist");
-
-            // Sent should not exist
-            let sent_mailbox = mailbox_store.get_mailbox(&sent_id).await.unwrap();
-            assert!(sent_mailbox.is_none(), "Sent should still be deleted");
-
-            // List should only return INBOX
-            let mailboxes = mailbox_store.list_mailboxes(&user).await.unwrap();
-            assert_eq!(mailboxes.len(), 1, "Should have 1 mailbox after restart");
-            assert_eq!(mailboxes[0].path().name(), Some("INBOX"));
-        }
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_mailbox_metadata_persistence_multiple_users() {
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-
-        let user1: Username = "user1".parse().unwrap();
-        let user2: Username = "user2".parse().unwrap();
-
-        let user1_inbox = MailboxPath::new(user1.clone(), vec!["INBOX".to_string()]);
-        let user2_inbox = MailboxPath::new(user2.clone(), vec!["INBOX".to_string()]);
-
-        // Create mailboxes for both users
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            mailbox_store.create_mailbox(&user1_inbox).await.unwrap();
-            mailbox_store.create_mailbox(&user2_inbox).await.unwrap();
-        }
-
-        // Verify both users' mailboxes are restored
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            let user1_mailboxes = mailbox_store.list_mailboxes(&user1).await.unwrap();
-            assert_eq!(user1_mailboxes.len(), 1);
-            assert_eq!(user1_mailboxes[0].path().user(), &user1);
-
-            let user2_mailboxes = mailbox_store.list_mailboxes(&user2).await.unwrap();
-            assert_eq!(user2_mailboxes.len(), 1);
-            assert_eq!(user2_mailboxes[0].path().user(), &user2);
-        }
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-
-    #[tokio::test]
-    async fn test_mailbox_metadata_rename_persistence() {
-        let temp_dir = std::env::temp_dir().join(format!("rusmes-test-{}", uuid::Uuid::new_v4()));
-
-        let user: Username = "testuser".parse().unwrap();
-        let original_path = MailboxPath::new(user.clone(), vec!["OldName".to_string()]);
-        let new_path = MailboxPath::new(user.clone(), vec!["NewName".to_string()]);
-
-        let mailbox_id;
-
-        // Create and rename mailbox
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            mailbox_id = mailbox_store.create_mailbox(&original_path).await.unwrap();
-            mailbox_store
-                .rename_mailbox(&mailbox_id, &new_path)
-                .await
-                .unwrap();
-        }
-
-        // Verify rename was persisted
-        {
-            let backend = FilesystemBackend::new(&temp_dir);
-            let mailbox_store = backend.mailbox_store();
-
-            let mailbox = mailbox_store.get_mailbox(&mailbox_id).await.unwrap();
-            assert!(mailbox.is_some());
-            assert_eq!(mailbox.unwrap().path().name(), Some("NewName"));
-        }
-
-        // Clean up
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-    }
-}
+#[path = "fs_tests.rs"]
+mod tests;

@@ -1,9 +1,12 @@
 //! POP3 session state machine and handler
 
 use crate::command::Pop3Command;
+use crate::maildrop_lock::{MaildropGuard, MaildropLockManager};
 use crate::parser::parse_command;
 use crate::response::Pop3Response;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use md5::{Digest, Md5};
+use rusmes_auth::sasl::{SaslConfig, SaslMechanism, SaslServer, SaslStep};
 use rusmes_auth::AuthBackend;
 use rusmes_proto::{Mail, MessageId, Username};
 use rusmes_storage::{MailboxId, MailboxPath, SearchCriteria, StorageBackend};
@@ -39,6 +42,11 @@ pub struct Pop3Config {
     pub greeting: String,
     pub timeout_seconds: u64,
     pub enable_stls: bool,
+    /// SASL mechanisms advertised in CAPA SASL line and accepted by AUTH.
+    ///
+    /// Default: `["PLAIN", "LOGIN", "CRAM-MD5", "SCRAM-SHA-256"]` — matching
+    /// what the SMTP server already exposes via `rusmes-auth::sasl`.
+    pub sasl_mechanisms: Vec<String>,
 }
 
 impl Default for Pop3Config {
@@ -48,6 +56,12 @@ impl Default for Pop3Config {
             greeting: "POP3 server ready".to_string(),
             timeout_seconds: 600, // 10 minutes
             enable_stls: false,
+            sasl_mechanisms: vec![
+                "PLAIN".to_string(),
+                "LOGIN".to_string(),
+                "CRAM-MD5".to_string(),
+                "SCRAM-SHA-256".to_string(),
+            ],
         }
     }
 }
@@ -72,15 +86,29 @@ pub struct Pop3Session {
     auth_backend: Arc<dyn AuthBackend>,
     storage_backend: Arc<dyn StorageBackend>,
     apop_timestamp: Option<String>,
+    /// Per-user maildrop lock manager shared across all sessions on this server.
+    maildrop_locks: MaildropLockManager,
+    /// RAII handle to this session's exclusive maildrop lock (RFC 1939 §3).
+    /// Held for the entirety of the Transaction state and released on QUIT
+    /// or session drop.
+    maildrop_guard: Option<MaildropGuard>,
+    /// Pending SASL mechanism, if a multi-step AUTH exchange is in progress.
+    /// While this is `Some`, raw client lines are routed to `step()` instead
+    /// of being parsed as POP3 commands.
+    pending_sasl: Option<Box<dyn SaslMechanism>>,
 }
 
 impl Pop3Session {
-    /// Create a new POP3 session
+    /// Create a new POP3 session.
+    ///
+    /// The `maildrop_locks` argument is shared across all sessions on a single
+    /// server so that exclusive-access semantics (RFC 1939 §3) hold.
     pub fn new(
         remote_addr: SocketAddr,
         config: Pop3Config,
         auth_backend: Arc<dyn AuthBackend>,
         storage_backend: Arc<dyn StorageBackend>,
+        maildrop_locks: MaildropLockManager,
     ) -> Self {
         Self {
             remote_addr,
@@ -92,6 +120,9 @@ impl Pop3Session {
             auth_backend,
             storage_backend,
             apop_timestamp: None,
+            maildrop_locks,
+            maildrop_guard: None,
+            pending_sasl: None,
         }
     }
 
@@ -112,6 +143,10 @@ impl Pop3Session {
     /// Handle a client connection
     pub async fn handle(mut self, stream: TcpStream) -> anyhow::Result<()> {
         info!("New POP3 connection from {}", self.remote_addr);
+        // Track this session in the active-connections gauge.
+        // The guard's Drop decrements the gauge regardless of how this fn exits.
+        let _conn_guard = rusmes_metrics::global_metrics().connection_guard("pop3");
+        rusmes_metrics::global_metrics().inc_tls_session(rusmes_metrics::tls_label::NO);
 
         let (reader, writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
@@ -158,20 +193,50 @@ impl Pop3Session {
             }
         }
 
+        // Release maildrop lock explicitly. (It would also be released by the
+        // session's Drop, but releasing here lets a follow-up session for the
+        // same user proceed immediately without waiting on connection teardown.)
+        self.release_maildrop_lock();
+
         info!("POP3 session ended for {}", self.remote_addr);
         Ok(())
     }
 
-    /// Handle a single command line
+    /// Test-only entry point that exposes the per-line dispatch (which is
+    /// otherwise driven from inside `handle()`) so integration tests can
+    /// exercise the protocol without binding an actual TCP socket.
+    ///
+    /// Hidden behind `#[doc(hidden)]` to discourage non-test use.
+    #[doc(hidden)]
+    pub async fn handle_line_for_test(&mut self, line: &str) -> Pop3Response {
+        self.handle_line(line).await
+    }
+
+    /// Test-only accessor for the current session state.
+    #[doc(hidden)]
+    pub fn state_for_test(&self) -> Pop3State {
+        self.state.clone()
+    }
+
+    /// Handle a single command line.
+    ///
+    /// While a multi-step SASL exchange is in progress (`pending_sasl.is_some()`),
+    /// raw client input is routed to the SASL mechanism's `step()` instead of
+    /// being parsed as a POP3 command. RFC 5034 also defines `*` as the
+    /// client-side abort indicator — we honor it here.
     async fn handle_line(&mut self, line: &str) -> Pop3Response {
-        let line = line.trim();
-        if line.is_empty() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             return Pop3Response::err("Empty command");
         }
 
-        debug!("Received: {}", line);
+        debug!("Received: {}", trimmed);
 
-        match parse_command(line) {
+        if self.pending_sasl.is_some() {
+            return self.handle_sasl_continuation(trimmed).await;
+        }
+
+        match parse_command(trimmed) {
             Ok(cmd) => self.handle_command(cmd).await,
             Err(e) => {
                 warn!("Parse error: {}", e);
@@ -199,6 +264,10 @@ impl Pop3Session {
             Pop3Command::Apop { name, digest } => self.handle_apop(name, digest).await,
             Pop3Command::Capa => self.handle_capa().await,
             Pop3Command::Stls => self.handle_stls().await,
+            Pop3Command::Auth {
+                mechanism,
+                initial_response,
+            } => self.handle_auth(mechanism, initial_response).await,
         }
     }
 
@@ -230,25 +299,49 @@ impl Pop3Session {
 
         // Authenticate
         match self.auth_backend.authenticate(&username, &password).await {
-            Ok(true) => {
-                // Load the user's mailbox
-                match self.load_mailbox(&username).await {
-                    Ok(_) => {
-                        self.state = Pop3State::Transaction;
-                        let count = self.messages.len();
-                        let size: usize = self.messages.iter().map(|m| m.size).sum();
-                        Pop3Response::ok(format!("{} messages ({} octets)", count, size))
-                    }
-                    Err(e) => {
-                        error!("Failed to load mailbox: {}", e);
-                        Pop3Response::err("Mailbox unavailable")
-                    }
-                }
-            }
+            Ok(true) => self.transition_to_transaction(username).await,
             Ok(false) => Pop3Response::err("Authentication failed"),
             Err(e) => {
                 error!("Auth error: {}", e);
                 Pop3Response::err("Authentication error")
+            }
+        }
+    }
+
+    /// Transition the session into Transaction state for the named user.
+    ///
+    /// Acquires the per-user maildrop lock (RFC 1939 §3) and loads the
+    /// mailbox. If another concurrent session already holds the lock, returns
+    /// `-ERR maildrop locked` and leaves the session in Authorization state.
+    async fn transition_to_transaction(&mut self, username: Username) -> Pop3Response {
+        // Acquire exclusive maildrop lock first — refusing the session here
+        // is cheap and avoids loading the mailbox just to throw it away.
+        let guard = match self.maildrop_locks.try_acquire(username.as_str()).await {
+            Some(g) => g,
+            None => {
+                warn!(
+                    "Maildrop locked for user '{}' (concurrent session)",
+                    username.as_str()
+                );
+                return Pop3Response::err("maildrop locked");
+            }
+        };
+
+        match self.load_mailbox(&username).await {
+            Ok(_) => {
+                self.username = Some(username);
+                self.maildrop_guard = Some(guard);
+                self.state = Pop3State::Transaction;
+                let count = self.messages.len();
+                let size: usize = self.messages.iter().map(|m| m.size).sum();
+                Pop3Response::ok(format!("{} messages ({} octets)", count, size))
+            }
+            Err(e) => {
+                // Releasing `guard` here (it goes out of scope) frees the lock
+                // so a retry can succeed once the storage error resolves.
+                drop(guard);
+                error!("Failed to load mailbox: {}", e);
+                Pop3Response::err("Mailbox unavailable")
             }
         }
     }
@@ -329,7 +422,7 @@ impl Pop3Session {
         let message_store = self.storage_backend.message_store();
         match message_store.get_message(&info.message_id).await {
             Ok(Some(mail)) => {
-                let content = mail_to_wire(&mail);
+                let content = mail_to_wire(&mail).await;
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
                 Pop3Response::ok_multiline(format!("{} octets", info.size), lines)
             }
@@ -383,7 +476,11 @@ impl Pop3Session {
         Pop3Response::ok(format!("Maildrop has {} messages", count))
     }
 
-    /// Handle QUIT command
+    /// Handle QUIT command.
+    ///
+    /// In Transaction state, transitions to Update so the command loop can
+    /// apply pending deletions; the maildrop lock is released after deletions
+    /// have been applied (see `handle()` and `release_maildrop_lock`).
     async fn handle_quit(&mut self) -> Pop3Response {
         match self.state {
             Pop3State::Authorization => {
@@ -400,6 +497,17 @@ impl Pop3Session {
             }
             Pop3State::Update => Pop3Response::ok("POP3 server signing off"),
         }
+    }
+
+    /// Explicitly drop the maildrop lock (no-op if not held).
+    ///
+    /// Called when transitioning out of Transaction state.  Even without this
+    /// call the lock would be released when `Pop3Session` is dropped (the
+    /// guard's `Drop` impl unlocks the inner `Mutex`), but releasing
+    /// proactively here lets follow-up sessions for the same user proceed
+    /// immediately rather than waiting for the connection to be reaped.
+    fn release_maildrop_lock(&mut self) {
+        self.maildrop_guard = None;
     }
 
     /// Handle TOP command
@@ -421,7 +529,7 @@ impl Pop3Session {
         let message_store = self.storage_backend.message_store();
         match message_store.get_message(&info.message_id).await {
             Ok(Some(mail)) => {
-                let content = mail_to_wire(&mail);
+                let content = mail_to_wire(&mail).await;
                 let all_lines: Vec<&str> = content.lines().collect();
 
                 // Find the end of headers (blank line)
@@ -519,21 +627,9 @@ impl Pop3Session {
             return Pop3Response::err("Authentication failed");
         }
 
-        // Authentication successful - load mailbox
-        match self.load_mailbox(&username).await {
-            Ok(_) => {
-                self.username = Some(username);
-                self.state = Pop3State::Transaction;
-                let count = self.messages.len();
-                let size: usize = self.messages.iter().map(|m| m.size).sum();
-                info!("APOP authentication successful for {}", name);
-                Pop3Response::ok(format!("{} messages ({} octets)", count, size))
-            }
-            Err(e) => {
-                error!("Failed to load mailbox for {}: {}", name, e);
-                Pop3Response::err("Mailbox unavailable")
-            }
-        }
+        // Authentication successful — acquire maildrop lock and transition.
+        info!("APOP authentication successful for {}", name);
+        self.transition_to_transaction(username).await
     }
 
     /// Handle CAPA command
@@ -544,6 +640,13 @@ impl Pop3Session {
         // Only advertise STLS in Authorization state and if enabled
         if self.state == Pop3State::Authorization && self.config.enable_stls {
             capabilities.push("STLS".to_string());
+        }
+
+        // SASL line per RFC 5034: "SASL <space-separated mechanism list>"
+        // Only advertise in Authorization state where AUTH is meaningful.
+        if self.state == Pop3State::Authorization && !self.config.sasl_mechanisms.is_empty() {
+            let sasl_line = format!("SASL {}", self.config.sasl_mechanisms.join(" "));
+            capabilities.push(sasl_line);
         }
 
         Pop3Response::ok_multiline("Capability list follows", capabilities)
@@ -574,6 +677,170 @@ impl Pop3Session {
         Pop3Response::ok("Begin TLS negotiation")
     }
 
+    // ========================================================================
+    // SASL AUTH (RFC 1734 + RFC 5034)
+    // ========================================================================
+
+    /// Handle the AUTH command. Drives a SASL exchange to completion. Multi-step
+    /// mechanisms park the in-flight `SaslMechanism` in `pending_sasl`; subsequent
+    /// raw client input lines are then fed to it via `handle_sasl_continuation`.
+    async fn handle_auth(
+        &mut self,
+        mechanism: Option<String>,
+        initial_response: Option<String>,
+    ) -> Pop3Response {
+        if self.state != Pop3State::Authorization {
+            return Pop3Response::err("Command not valid in this state");
+        }
+
+        // Bare `AUTH` — list mechanisms in the multiline form RFC 1734 specifies.
+        let mechanism_name = match mechanism {
+            Some(m) => m,
+            None => {
+                return Pop3Response::ok_multiline(
+                    "Supported authentication mechanisms",
+                    self.config.sasl_mechanisms.clone(),
+                );
+            }
+        };
+
+        // Disallow nested AUTH while another exchange is already pending.
+        if self.pending_sasl.is_some() {
+            return Pop3Response::err("AUTH already in progress");
+        }
+
+        // Build the SASL server with the configured mechanism set.
+        let server = SaslServer::new(SaslConfig {
+            enabled_mechanisms: self.config.sasl_mechanisms.clone(),
+            hostname: self.config.hostname.clone(),
+        });
+
+        if !server.is_mechanism_enabled(&mechanism_name) {
+            return Pop3Response::err(format!(
+                "Authentication mechanism '{}' not supported",
+                mechanism_name
+            ));
+        }
+
+        let mech = match server.create_mechanism(&mechanism_name) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(
+                    "Failed to instantiate SASL mechanism '{}': {}",
+                    mechanism_name, e
+                );
+                return Pop3Response::err("Authentication mechanism unavailable");
+            }
+        };
+
+        // Decode initial response (if present) per RFC 5034. The literal `=`
+        // token denotes an empty initial response.
+        let initial_input: Option<Vec<u8>> = match initial_response.as_deref() {
+            None => None,
+            Some("=") => Some(Vec::new()),
+            Some(ir) => match BASE64.decode(ir.as_bytes()) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    warn!("Invalid base64 in AUTH initial response: {}", e);
+                    return Pop3Response::err("Invalid base64 in initial response");
+                }
+            },
+        };
+
+        // Single source of truth: park the mechanism, then drive the first
+        // step (either with the initial response, or — for mechanisms that
+        // produce a challenge first — with empty input). For PLAIN without an
+        // initial response, the canonical POP3 server replies `+ ` so the
+        // client transmits the credentials on the next line; we therefore
+        // skip the first step entirely and just send the empty continuation.
+        if mechanism_name.eq_ignore_ascii_case("PLAIN") && initial_input.is_none() {
+            self.pending_sasl = Some(mech);
+            return Pop3Response::cont("");
+        }
+
+        self.pending_sasl = Some(mech);
+        self.drive_pending_sasl(initial_input.unwrap_or_default())
+            .await
+    }
+
+    /// Drive one step of the parked SASL mechanism with `input` and translate
+    /// the outcome into a POP3 response. The mechanism is taken out of
+    /// `pending_sasl`, stepped, and re-parked iff the exchange is still in
+    /// progress (the mechanism returned a continuation).
+    async fn drive_pending_sasl(&mut self, input: Vec<u8>) -> Pop3Response {
+        let mut mech = match self.pending_sasl.take() {
+            Some(m) => m,
+            None => return Pop3Response::err("No SASL exchange in progress"),
+        };
+
+        let step_result = mech.step(&input, &*self.auth_backend).await;
+
+        match step_result {
+            Ok(SaslStep::Done {
+                success,
+                username: maybe_user,
+            }) => {
+                if success {
+                    if let Some(user) = maybe_user {
+                        self.transition_to_transaction(user).await
+                    } else {
+                        warn!("SASL reported success but no username");
+                        Pop3Response::err("Authentication failed")
+                    }
+                } else {
+                    Pop3Response::err("Authentication failed")
+                }
+            }
+            Ok(SaslStep::Challenge { data }) => {
+                // Park the mechanism so the next client line continues the
+                // exchange. Mechanisms emit already-base64-encoded data as
+                // bytes, so we forward as a UTF-8 string (the SASL framework
+                // encodes inside the mechanisms — see e.g. LoginMechanism).
+                let payload = String::from_utf8_lossy(&data).into_owned();
+                self.pending_sasl = Some(mech);
+                Pop3Response::cont(payload)
+            }
+            Ok(SaslStep::Continue) => {
+                // Mechanism wants more input but has no challenge to send.
+                self.pending_sasl = Some(mech);
+                Pop3Response::cont("")
+            }
+            Err(e) => {
+                warn!("SASL step error: {}", e);
+                Pop3Response::err("Authentication exchange failed")
+            }
+        }
+    }
+
+    /// Handle a raw client line while a SASL exchange is in progress.
+    ///
+    /// RFC 5034 §3: the literal token `*` cancels the exchange and the server
+    /// must respond with a negative status indicator.
+    async fn handle_sasl_continuation(&mut self, line: &str) -> Pop3Response {
+        // Honour client-side abort (RFC 5034 §3 / RFC 4954).
+        if line == "*" {
+            self.pending_sasl = None;
+            return Pop3Response::err("Authentication aborted");
+        }
+
+        // Decode base64 client response. The bare `=` token (per RFC 5034) is
+        // an empty payload.
+        let decoded = if line == "=" {
+            Vec::<u8>::new()
+        } else {
+            match BASE64.decode(line.as_bytes()) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Invalid base64 in SASL response: {}", e);
+                    self.pending_sasl = None;
+                    return Pop3Response::err("Invalid base64 in SASL response");
+                }
+            }
+        };
+
+        self.drive_pending_sasl(decoded).await
+    }
+
     /// Load the user's mailbox
     async fn load_mailbox(&mut self, username: &Username) -> anyhow::Result<()> {
         // Get the INBOX for this user
@@ -597,7 +864,7 @@ impl Pop3Session {
         for (idx, message_id) in message_ids.iter().enumerate() {
             // Get message to determine size
             if let Some(mail) = message_store.get_message(message_id).await? {
-                let size = mail_to_wire(&mail).len();
+                let size = mail_to_wire(&mail).await.len();
                 self.messages.push(MessageInfo {
                     message_id: *message_id,
                     uid: (idx + 1) as u32, // Use sequence number as UID for now
@@ -645,7 +912,11 @@ impl Pop3Session {
 }
 
 /// Convert a Mail object to RFC822 wire format
-fn mail_to_wire(mail: &Mail) -> String {
+///
+/// For `MessageBody::Large`, the body bytes are read asynchronously before
+/// formatting.  On read failure the body section is left empty and a warning
+/// is logged.
+async fn mail_to_wire(mail: &Mail) -> String {
     let message = mail.message();
     let headers = message.headers();
     let body = message.body();
@@ -675,10 +946,14 @@ fn mail_to_wire(mail: &Mail) -> String {
                 result.push_str(&String::from_utf8_lossy(bytes));
             }
         }
-        rusmes_proto::MessageBody::Large(_) => {
-            // For large messages, we'd need to stream
-            result.push_str("[Large message body not fully loaded]");
-        }
+        rusmes_proto::MessageBody::Large(large) => match large.read_to_bytes().await {
+            Ok(bytes) => {
+                result.push_str(&String::from_utf8_lossy(&bytes));
+            }
+            Err(e) => {
+                warn!("Failed to read large message body for POP3 RETR: {e}");
+            }
+        },
     }
 
     result

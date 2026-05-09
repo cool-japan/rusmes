@@ -1,9 +1,19 @@
 //! EventSource (Server-Sent Events) endpoint for JMAP
 //!
 //! Implements RFC 8620 Section 7.3:
-//! - GET /eventsource - Server-Sent Events for push notifications
+//! - `GET /eventsource` — Server-Sent Events push channel for state-change notifications
 //! - State change notifications
 //! - Push subscription management
+//!
+//! ## Mount Point
+//!
+//! This route is mounted by [`crate::api::JmapServer::routes_with_auth_and_state`]
+//! behind the [`crate::auth::require_auth`] middleware. The handler requires a
+//! valid authenticated session before establishing the SSE stream.
+//!
+//! Per-account event filtering (ensuring that one user cannot receive another
+//! user's state-change pushes) is a follow-up concern and is not yet implemented
+//! here.
 
 use axum::{
     extract::{Query, State},
@@ -36,10 +46,14 @@ pub struct StateChange {
     pub changed: HashMap<String, String>,
 }
 
-/// Push subscription
+/// EventSource push filter hint (not the full RFC 8620 §5.1 PushSubscription resource).
+///
+/// This lightweight struct records the URL + type filter for a single SSE stream
+/// connection.  The full RFC 8620 `PushSubscription` resource lives in
+/// `crate::types::PushSubscription`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PushSubscription {
+pub struct EventSourcePushHint {
     /// Push subscription URL
     pub url: String,
     /// Types to monitor
@@ -108,7 +122,10 @@ impl Default for EventSourceManager {
     }
 }
 
-/// Create EventSource router
+/// Create EventSource router.
+///
+/// Mounts:
+/// - `GET /eventsource` — Server-Sent Events push channel (RFC 8620 §7.3)
 pub fn eventsource_routes() -> Router<EventSourceManager> {
     Router::new().route("/eventsource", get(eventsource_handler))
 }
@@ -279,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_push_subscription_serialization() {
-        let subscription = PushSubscription {
+        let subscription = EventSourcePushHint {
             url: "https://push.example.com/abc123".to_string(),
             types: Some(vec!["Email".to_string(), "Mailbox".to_string()]),
         };
@@ -383,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_push_subscription_without_types() {
-        let subscription = PushSubscription {
+        let subscription = EventSourcePushHint {
             url: "https://push.example.com/def456".to_string(),
             types: None,
         };
@@ -487,7 +504,7 @@ mod tests {
     #[test]
     fn test_push_subscription_deserialization() {
         let json = r#"{"url":"https://example.com","types":["Email"]}"#;
-        let subscription: PushSubscription = serde_json::from_str(json).unwrap();
+        let subscription: EventSourcePushHint = serde_json::from_str(json).unwrap();
 
         assert_eq!(subscription.url, "https://example.com");
         assert_eq!(subscription.types, Some(vec!["Email".to_string()]));

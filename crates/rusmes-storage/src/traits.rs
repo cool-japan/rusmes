@@ -4,9 +4,12 @@ use crate::types::{
     Mailbox, MailboxCounters, MailboxId, MailboxPath, MessageFlags, MessageMetadata, Quota,
     SearchCriteria, SpecialUseAttributes,
 };
+use crate::StorageEvent;
 use async_trait::async_trait;
 use rusmes_proto::{Mail, MessageId, Username};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
 
 /// Mailbox storage operations
 #[async_trait]
@@ -128,6 +131,37 @@ pub trait MessageStore: Send + Sync {
         &self,
         mailbox_id: &MailboxId,
     ) -> anyhow::Result<Vec<MessageMetadata>>;
+
+    /// Get the current flags for a message by scanning all mailboxes.
+    ///
+    /// Returns `Ok(None)` when the message is not found.  The default
+    /// implementation scans `get_mailbox_messages` for every known mailbox,
+    /// which may be expensive on backends with many mailboxes.  Implementations
+    /// that can answer this query more efficiently should override this method.
+    ///
+    /// IMPORTANT: callers must supply the full list of mailbox IDs to search.
+    /// Because `MessageStore` does not track the global mailbox index, this
+    /// default implementation cannot enumerate mailboxes on its own.  The
+    /// default simply returns `Ok(None)`.  Backends that can enumerate their
+    /// own mailboxes (e.g. `FilesystemMessageStore`) override this method.
+    async fn get_message_flags(
+        &self,
+        _message_id: &MessageId,
+    ) -> anyhow::Result<Option<MessageFlags>> {
+        Ok(None)
+    }
+
+    /// Look up the RFC 5256 thread ID for a stored message.
+    ///
+    /// Returns `Ok(None)` for backends that do not implement threading, or when
+    /// the message is not found in the thread index. The filesystem backend
+    /// overrides this by scanning mailbox directories.
+    async fn get_message_thread_id(
+        &self,
+        _message_id: &MessageId,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Metadata storage operations
@@ -145,6 +179,7 @@ pub trait MetadataStore: Send + Sync {
 }
 
 /// Combined storage backend
+#[async_trait]
 pub trait StorageBackend: Send + Sync {
     /// Get mailbox store
     fn mailbox_store(&self) -> Arc<dyn MailboxStore>;
@@ -154,4 +189,40 @@ pub trait StorageBackend: Send + Sync {
 
     /// Get metadata store
     fn metadata_store(&self) -> Arc<dyn MetadataStore>;
+
+    /// Subscribe to storage events.
+    ///
+    /// The default implementation returns a receiver from a channel whose
+    /// sender is immediately dropped, so the receiver will never yield events.
+    /// Backends that support events (filesystem) override this method.
+    fn event_stream(&self) -> broadcast::Receiver<StorageEvent> {
+        let (tx, rx) = broadcast::channel(1);
+        drop(tx);
+        rx
+    }
+
+    /// Remove expunged messages older than `older_than`.
+    ///
+    /// Returns the number of messages removed. The default implementation is
+    /// a no-op returning 0. Each concrete backend overrides this with its own
+    /// compaction strategy.
+    async fn compact_expunged(&self, _older_than: Duration) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+
+    /// Return the filesystem base path if this is a filesystem backend.
+    ///
+    /// Used by the backup/restore library API. Non-filesystem backends return `None`.
+    fn as_filesystem_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+
+    /// List every user known to this backend.
+    ///
+    /// Used by maintenance code (e.g. rusmes-search rebuild) that needs to walk
+    /// every mailbox in the system. The default implementation returns an empty
+    /// vector; backends that can enumerate users override this.
+    async fn list_all_users(&self) -> anyhow::Result<Vec<Username>> {
+        Ok(Vec::new())
+    }
 }

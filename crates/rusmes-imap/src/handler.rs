@@ -19,6 +19,7 @@ use crate::handler_message::{
     handle_append, handle_close, handle_copy, handle_expunge, handle_fetch, handle_move,
     handle_search, handle_store, handle_uid,
 };
+use crate::mailbox_registry::MailboxRegistry;
 use crate::response::ImapResponse;
 use crate::session::ImapSession;
 use rusmes_auth::AuthBackend;
@@ -31,6 +32,8 @@ pub struct HandlerContext {
     pub message_store: Arc<dyn MessageStore>,
     pub metadata_store: Arc<dyn MetadataStore>,
     pub auth_backend: Arc<dyn AuthBackend>,
+    /// Cross-session mailbox notification registry (Cluster 10).
+    pub mailbox_registry: Arc<MailboxRegistry>,
 }
 
 impl HandlerContext {
@@ -46,6 +49,24 @@ impl HandlerContext {
             message_store,
             metadata_store,
             auth_backend,
+            mailbox_registry: Arc::new(MailboxRegistry::new()),
+        }
+    }
+
+    /// Create a handler context with a pre-existing registry (for sharing across server instances).
+    pub fn with_registry(
+        mailbox_store: Arc<dyn MailboxStore>,
+        message_store: Arc<dyn MessageStore>,
+        metadata_store: Arc<dyn MetadataStore>,
+        auth_backend: Arc<dyn AuthBackend>,
+        mailbox_registry: Arc<MailboxRegistry>,
+    ) -> Self {
+        Self {
+            mailbox_store,
+            message_store,
+            metadata_store,
+            auth_backend,
+            mailbox_registry,
         }
     }
 }
@@ -134,6 +155,7 @@ pub async fn handle_command(
         ImapCommand::Idle => handle_idle(ctx, session, tag).await,
         ImapCommand::Namespace => handle_namespace(tag, session).await,
         ImapCommand::Uid { subcommand } => handle_uid(ctx, session, tag, subcommand.as_ref()).await,
+        ImapCommand::Compress { mechanism } => handle_compress(session, tag, &mechanism).await,
     }
 }
 
@@ -155,6 +177,8 @@ async fn handle_capability(tag: &str) -> anyhow::Result<ImapResponse> {
         "CHILDREN",
         "SPECIAL-USE",
         "MOVE",
+        // Compression (RFC 4978)
+        "COMPRESS=DEFLATE",
         // SASL authentication mechanisms (RFC 3501 Section 6.2.2)
         "AUTH=PLAIN",
         "AUTH=LOGIN",
@@ -173,4 +197,33 @@ async fn handle_capability(tag: &str) -> anyhow::Result<ImapResponse> {
 /// Handle NOOP command
 async fn handle_noop(tag: &str) -> anyhow::Result<ImapResponse> {
     Ok(ImapResponse::ok(tag, "NOOP completed"))
+}
+
+/// Handle COMPRESS command (RFC 4978).
+///
+/// This handler only validates the mechanism and sets the `compress_pending` flag on the session.
+/// The actual stream wrapping is done by `server::imap_session_loop` immediately after this
+/// response is sent and flushed, using `oxiarc_deflate::raw_stream::{RawInflateReader,
+/// RawDeflateWriter}`.
+async fn handle_compress(
+    session: &mut ImapSession,
+    tag: &str,
+    mechanism: &str,
+) -> anyhow::Result<ImapResponse> {
+    if !mechanism.eq_ignore_ascii_case("DEFLATE") {
+        return Ok(ImapResponse::no(
+            tag,
+            format!("COMPRESS: unsupported mechanism {mechanism}"),
+        ));
+    }
+    // Only allow compression once per session (RFC 4978 §3).
+    if session.compress_pending {
+        return Ok(ImapResponse::no(tag, "COMPRESS: already active"));
+    }
+    // Signal the server loop to swap the stream after the OK is written.
+    session.compress_pending = true;
+    Ok(ImapResponse::ok(
+        tag,
+        "[COMPRESSIONACTIVE] Begin DEFLATE compression",
+    ))
 }
