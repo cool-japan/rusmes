@@ -137,9 +137,9 @@ async-stream = "0.3"
 tokio-test = "0.4"
 
 # Compression / archiving
-oxiarc-deflate = { version = "0.2.8", features = ["async-io"] }
-oxiarc-zstd = "0.2.8"
-oxiarc-archive = "0.2.8"
+oxiarc-deflate = { version = "0.3.0", features = ["async-io"] }
+oxiarc-zstd = "0.3.0"
+oxiarc-archive = "0.3.0"
 
 # CLI
 clap_complete = "4.6"
@@ -196,6 +196,4 @@ amaters-sdk-rust = { path = "../amaters/crates/amaters-sdk-rust", version = "0.2
 nix = { version = "0.31.2", features = ["user", "fs"] }
 
 [patch.crates-io]
-oxiarc-deflate = { path = "../oxiarc/oxiarc-deflate" }
-oxiarc-core = { path = "../oxiarc/oxiarc-core" }
 
